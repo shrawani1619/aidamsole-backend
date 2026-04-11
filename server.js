@@ -9,13 +9,20 @@ const path = require('path');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
+/** Comma-separated origins in FRONTEND_URL (e.g. local + Vercel). */
+function parseCorsOrigins() {
+  const raw = process.env.FRONTEND_URL || 'http://localhost:3000';
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+const corsOrigins = parseCorsOrigins();
+
 const app = express();
 const server = http.createServer(app);
 
 // Socket.io setup
 const io = socketIo(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: corsOrigins.length === 1 ? corsOrigins[0] : corsOrigins,
     methods: ['GET', 'POST'],
     credentials: true
   }
@@ -27,13 +34,19 @@ app.set('io', io);
 // Security middleware
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
-// CORS
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+// CORS — must include the exact browser origin (scheme + host, no trailing slash)
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      if (corsOrigins.includes(origin)) return callback(null, true);
+      return callback(null, false);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
 
 // Rate limiting
 const limiter = rateLimit({
