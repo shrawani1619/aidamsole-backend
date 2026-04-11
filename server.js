@@ -51,10 +51,17 @@ app.use(morgan('dev'));
 // Static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// MongoDB connection
-mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/aidamsole')
-  .then(() => console.log('✅ MongoDB Connected'))
-  .catch(err => console.error('❌ MongoDB Error:', err));
+const DEFAULT_MONGO_URI = 'mongodb://localhost:27017/aidamsole';
+const mongoFromEnv = process.env.MONGO_URI?.trim();
+const usingMongoFallback = !mongoFromEnv;
+const MONGO_URI = mongoFromEnv || DEFAULT_MONGO_URI;
+const initDatabase = require('./utils/initDatabase');
+
+/** Hide password in connection strings printed to the terminal */
+function redactMongoUri(uri) {
+  if (!uri || typeof uri !== 'string') return '(not set)';
+  return uri.replace(/:([^/@?]+)@/, ':***@');
+}
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
@@ -135,12 +142,33 @@ app.use('*', (req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
 });
 
-// Cron jobs
-require('./utils/cronJobs')(io);
-
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`🚀 AiDamsole Server running on port ${PORT}`);
-});
+
+async function start() {
+  try {
+    await mongoose.connect(MONGO_URI);
+    console.log('✅ MongoDB connected');
+    console.log(
+      usingMongoFallback
+        ? '   source: default fallback (MONGO_URI missing or empty in .env — using local MongoDB)'
+        : '   source: MONGO_URI from environment (.env)'
+    );
+    console.log(`   ${redactMongoUri(MONGO_URI)}`);
+    console.log(`   database: "${mongoose.connection.name}"`);
+
+    await initDatabase();
+
+    require('./utils/cronJobs')(io);
+
+    server.listen(PORT, () => {
+      console.log(`🚀 AiDamsole Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('❌ Server failed to start:', err.message || err);
+    process.exit(1);
+  }
+}
+
+start();
 
 module.exports = { app, io };
