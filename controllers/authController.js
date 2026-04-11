@@ -3,7 +3,13 @@ const User = require('../models/User');
 const Department = require('../models/Department');
 const { parsePhone } = require('../utils/phone');
 
-const generateToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRE || '7d' });
+function generateToken(id) {
+  const secret = process.env.JWT_SECRET?.trim();
+  if (!secret) {
+    throw new Error('JWT_SECRET is not set on the server (add it in Render → Environment)');
+  }
+  return jwt.sign({ id }, secret, { expiresIn: process.env.JWT_EXPIRE || '7d' });
+}
 
 // @POST /api/auth/login
 exports.login = async (req, res) => {
@@ -32,7 +38,8 @@ exports.login = async (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+    console.error('[auth/login]', err.message || err);
+    res.status(500).json({ success: false, message: err.message || 'Login failed' });
   }
 };
 

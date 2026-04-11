@@ -9,14 +9,22 @@ const path = require('path');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
-/** Comma-separated origins in FRONTEND_URL (e.g. local + Vercel). */
+/** Match browser `Origin` (no path); trim and strip trailing slashes from env typos. */
+function normalizeCorsOrigin(value) {
+  if (!value || typeof value !== 'string') return '';
+  return value.trim().replace(/\/+$/, '');
+}
+
+/** Comma-separated origins in FRONTEND_URL (e.g. http://localhost:3000,https://app.vercel.app). */
 function parseCorsOrigins() {
   const raw = process.env.FRONTEND_URL || 'http://localhost:3000';
-  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  const list = raw.split(',').map((s) => normalizeCorsOrigin(s)).filter(Boolean);
+  return [...new Set(list)];
 }
 const corsOrigins = parseCorsOrigins();
 
 const app = express();
+app.set('trust proxy', 1);
 const server = http.createServer(app);
 
 // Socket.io setup
@@ -34,12 +42,14 @@ app.set('io', io);
 // Security middleware
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
-// CORS — must include the exact browser origin (scheme + host, no trailing slash)
+// CORS — `Origin` must match an entry in FRONTEND_URL (comma-separated on Render).
 app.use(
   cors({
     origin(origin, callback) {
       if (!origin) return callback(null, true);
-      if (corsOrigins.includes(origin)) return callback(null, true);
+      const normalized = normalizeCorsOrigin(origin);
+      if (corsOrigins.includes(normalized)) return callback(null, true);
+      console.warn('[CORS] blocked:', normalized, '| configured:', corsOrigins.join(' | ') || '(none)');
       return callback(null, false);
     },
     credentials: true,
@@ -48,11 +58,12 @@ app.use(
   })
 );
 
-// Rate limiting
+// Rate limiting (skip OPTIONS so preflight is never 429’d before CORS completes)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
-  message: { success: false, message: 'Too many requests, please try again later.' }
+  message: { success: false, message: 'Too many requests, please try again later.' },
+  skip: (req) => req.method === 'OPTIONS',
 });
 app.use('/api/', limiter);
 
@@ -159,6 +170,11 @@ const PORT = process.env.PORT || 5000;
 
 async function start() {
   try {
+    if (!process.env.JWT_SECRET?.trim()) {
+      console.error('❌ JWT_SECRET is missing or empty. Login will fail. Set JWT_SECRET in Render → Environment.');
+      process.exit(1);
+    }
+
     await mongoose.connect(MONGO_URI);
     console.log('✅ MongoDB connected');
     console.log(
@@ -175,6 +191,7 @@ async function start() {
 
     server.listen(PORT, () => {
       console.log(`🚀 AiDamsole Server running on port ${PORT}`);
+      console.log(`🌐 CORS allowed origins (${corsOrigins.length}): ${corsOrigins.join(' | ')}`);
     });
   } catch (err) {
     console.error('❌ Server failed to start:', err.message || err);
