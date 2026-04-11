@@ -5,14 +5,15 @@ const {
   updateProject, deleteProject, getProjectTasks
 } = require('../controllers/projectController');
 const { protect, departmentScope } = require('../middleware/auth');
+const { requireModuleAction } = require('../middleware/permissions');
 
 router.use(protect, departmentScope);
 
-router.get('/', getProjects);
-router.post('/', createProject);
-router.get('/:id', getProject);
-router.put('/:id', updateProject);
-router.delete('/:id', deleteProject);
-router.get('/:id/tasks', getProjectTasks);
+router.get('/', requireModuleAction('projects', 'view'), getProjects);
+router.post('/', requireModuleAction('projects', 'create'), createProject);
+router.get('/:id', requireModuleAction('projects', 'view'), getProject);
+router.put('/:id', requireModuleAction('projects', 'edit'), updateProject);
+router.delete('/:id', requireModuleAction('projects', 'delete'), deleteProject);
+router.get('/:id/tasks', requireModuleAction('projects', 'view'), getProjectTasks);
 
 module.exports = router;

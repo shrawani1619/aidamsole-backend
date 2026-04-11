@@ -32,7 +32,11 @@ const userSchema = new mongoose.Schema({
   preferences: {
     notifications: { type: Boolean, default: true },
     emailAlerts: { type: Boolean, default: true }
-  }
+  },
+  passwordResetTokenHash: { type: String, select: false },
+  passwordResetExpires: { type: Date },
+  /** Admin overrides merged with role defaults — see utils/modulePermissions.js */
+  modulePermissions: { type: mongoose.Schema.Types.Mixed, default: undefined },
 }, { timestamps: true });
 
 userSchema.pre('save', async function (next) {

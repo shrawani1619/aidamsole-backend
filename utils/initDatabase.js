@@ -22,7 +22,21 @@ function getModels() {
  * We avoid explicit createCollection() — many hosted MongoDB users lack that
  * permission even when readWrite + createIndex works.
  */
+/** Legacy projects stored `service` as a string; schema expects an array of services. */
+async function migrateProjectServiceToArray() {
+  const col = mongoose.connection.collection('projects');
+  const n = await col.countDocuments({ service: { $type: 'string' } });
+  if (!n) return;
+  const docs = await col.find({ service: { $type: 'string' } }).toArray();
+  for (const doc of docs) {
+    await col.updateOne({ _id: doc._id }, { $set: { service: [doc.service] } });
+  }
+  console.log(`✅ Migrated ${n} project document(s): service string → string[]`);
+}
+
 async function initDatabase() {
+  await migrateProjectServiceToArray();
+
   const models = getModels();
   const settled = await Promise.allSettled(models.map((Model) => Model.syncIndexes()));
 

@@ -5,16 +5,17 @@ const {
   updateClient, updateHealthScore, deleteClient, getClientTimeline
 } = require('../controllers/clientController');
 const { protect, departmentScope } = require('../middleware/auth');
+const { requireModuleAction } = require('../middleware/permissions');
 
-// All routes protected — no role blocking, scope handled by departmentScope
+// All routes protected — scope handled by departmentScope; module ACL enforced per method
 router.use(protect, departmentScope);
 
-router.get('/', getClients);
-router.post('/', createClient);
-router.get('/:id', getClient);
-router.put('/:id', updateClient);
-router.put('/:id/health-score', updateHealthScore);
-router.delete('/:id', deleteClient);
-router.get('/:id/timeline', getClientTimeline);
+router.get('/', requireModuleAction('clients', 'view'), getClients);
+router.post('/', requireModuleAction('clients', 'create'), createClient);
+router.get('/:id', requireModuleAction('clients', 'view'), getClient);
+router.put('/:id', requireModuleAction('clients', 'edit'), updateClient);
+router.put('/:id/health-score', requireModuleAction('clients', 'edit'), updateHealthScore);
+router.delete('/:id', requireModuleAction('clients', 'delete'), deleteClient);
+router.get('/:id/timeline', requireModuleAction('clients', 'view'), getClientTimeline);
 
 module.exports = router;

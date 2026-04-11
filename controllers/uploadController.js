@@ -15,7 +15,7 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req, file, cb) => {
-  const allowed = /jpeg|jpg|png|gif|pdf|doc|docx|xlsx|xls|csv|txt|zip|mp4|mov/;
+  const allowed = /jpeg|jpg|png|gif|webp|heic|heif|pdf|doc|docx|xlsx|xls|csv|txt|zip|mp4|mov/;
   const ext = path.extname(file.originalname).toLowerCase().slice(1);
   if (allowed.test(ext)) cb(null, true);
   else cb(new Error('File type not allowed'), false);

@@ -173,7 +173,7 @@ const seed = async () => {
       title: 'TechVista SEO Campaign Q4 2024', clientId: clients[0]._id,
       departmentId: deptMap['seo'], managerId: seoManager._id,
       team: [seoManager._id, am1._id, users[8]._id],
-      service: 'SEO', status: 'active', priority: 'high',
+      service: ['SEO'], status: 'active', priority: 'high',
       startDate: new Date('2024-10-01'), dueDate: new Date('2024-12-31'),
       budget: 45000, spent: 28000, progress: 65,
       kpis: [
@@ -186,7 +186,7 @@ const seed = async () => {
       title: 'Fashion Forward Meta Ads', clientId: clients[1]._id,
       departmentId: deptMap['paid_ads'], managerId: adsManager._id,
       team: [adsManager._id, am2._id],
-      service: 'Paid Ads', status: 'active', priority: 'high',
+      service: ['Paid Ads'], status: 'active', priority: 'high',
       startDate: new Date('2024-09-01'), dueDate: new Date('2024-12-31'),
       budget: 120000, spent: 78000, progress: 55,
       kpis: [
@@ -199,7 +199,7 @@ const seed = async () => {
       title: 'Real Estate Kings PPC + Web Revamp', clientId: clients[3]._id,
       departmentId: deptMap['web_dev'], managerId: users[4]._id,
       team: [users[4]._id, am2._id],
-      service: 'Web Dev', status: 'active', priority: 'critical',
+      service: ['Web Dev', 'Paid Ads'], status: 'active', priority: 'critical',
       startDate: new Date('2024-10-15'), dueDate: new Date('2024-12-15'),
       budget: 85000, spent: 42000, progress: 40
     },
@@ -207,7 +207,7 @@ const seed = async () => {
       title: 'GreenEarth SEO Recovery', clientId: clients[2]._id,
       departmentId: deptMap['seo'], managerId: seoManager._id,
       team: [seoManager._id, users[8]._id],
-      service: 'SEO', status: 'on_hold', priority: 'medium',
+      service: ['SEO'], status: 'on_hold', priority: 'medium',
       startDate: new Date('2024-08-01'), dueDate: new Date('2024-11-30'),
       budget: 20000, spent: 12000, progress: 30
     }

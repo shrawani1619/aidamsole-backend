@@ -5,17 +5,18 @@ const {
   twoEyeApprove, addComment, logTime, updateSubtask
 } = require('../controllers/taskController');
 const { protect, departmentScope } = require('../middleware/auth');
+const { requireModuleAction } = require('../middleware/permissions');
 
 router.use(protect, departmentScope);
 
-router.get('/', getTasks);
-router.post('/', createTask);
-router.get('/:id', getTask);
-router.put('/:id', updateTask);
-router.delete('/:id', deleteTask);
-router.put('/:id/two-eye-approve', twoEyeApprove);
-router.post('/:id/comments', addComment);
-router.post('/:id/time-log', logTime);
-router.put('/:id/subtask/:subtaskId', updateSubtask);
+router.get('/', requireModuleAction('tasks', 'view'), getTasks);
+router.post('/', requireModuleAction('tasks', 'create'), createTask);
+router.get('/:id', requireModuleAction('tasks', 'view'), getTask);
+router.put('/:id', requireModuleAction('tasks', 'edit'), updateTask);
+router.delete('/:id', requireModuleAction('tasks', 'delete'), deleteTask);
+router.put('/:id/two-eye-approve', requireModuleAction('tasks', 'edit'), twoEyeApprove);
+router.post('/:id/comments', requireModuleAction('tasks', 'edit'), addComment);
+router.post('/:id/time-log', requireModuleAction('tasks', 'edit'), logTime);
+router.put('/:id/subtask/:subtaskId', requireModuleAction('tasks', 'edit'), updateSubtask);
 
 module.exports = router;

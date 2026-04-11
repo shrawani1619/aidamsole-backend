@@ -1,7 +1,9 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const Department = require('../models/Department');
+const { resolveModulePermissions } = require('../utils/modulePermissions');
 const { parsePhone } = require('../utils/phone');
+const { hashToken, setPasswordResetToken, clearPasswordResetFields } = require('../utils/passwordReset');
+const { sendPasswordResetEmail } = require('../utils/email');
 
 function generateToken(id) {
   const secret = process.env.JWT_SECRET?.trim();
@@ -29,12 +31,15 @@ exports.login = async (req, res) => {
     user.lastLogin = new Date();
     await user.save({ validateBeforeSave: false });
 
+    const effectiveModulePermissions = resolveModulePermissions(user);
     res.json({
       success: true,
       token: generateToken(user._id),
       user: {
         _id: user._id, name: user.name, email: user.email, role: user.role,
-        avatar: user.avatar, departmentId: user.departmentId, departmentRole: user.departmentRole
+        avatar: user.avatar, departmentId: user.departmentId, departmentRole: user.departmentRole,
+        modulePermissions: user.modulePermissions,
+        effectiveModulePermissions,
       }
     });
   } catch (err) {
@@ -47,7 +52,9 @@ exports.login = async (req, res) => {
 exports.getMe = async (req, res) => {
   try {
     const user = await User.findById(req.user._id).populate('departmentId', 'name slug color icon');
-    res.json({ success: true, user });
+    const u = user.toObject ? user.toObject() : user;
+    u.effectiveModulePermissions = resolveModulePermissions(user);
+    res.json({ success: true, user: u });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -69,19 +76,89 @@ exports.updatePassword = async (req, res) => {
   }
 };
 
+// @POST /api/auth/forgot-password  (public)
+exports.forgotPassword = async (req, res) => {
+  try {
+    const email = (req.body.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ success: false, message: 'Email is required' });
+
+    const msg =
+      'If an account exists for this email, you will receive a link to reset your password shortly.';
+    const user = await User.findOne({ email });
+    if (!user || !user.isActive) {
+      return res.json({ success: true, message: msg });
+    }
+
+    const raw = await setPasswordResetToken(user._id);
+    const base = (process.env.FRONTEND_URL || 'http://localhost:3000').split(',')[0].trim().replace(/\/+$/, '');
+    const resetUrl = `${base}/reset-password?token=${encodeURIComponent(raw)}`;
+    const sent = await sendPasswordResetEmail(user, resetUrl);
+    if (!sent.success) {
+      console.error('[forgot-password] Email failed:', sent.error);
+      return res.status(500).json({
+        success: false,
+        message: 'Could not send email. Ask your admin to configure SMTP (SMTP_HOST, SMTP_USER, SMTP_PASS).',
+      });
+    }
+    return res.json({ success: true, message: msg });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// @POST /api/auth/reset-password  (public — token from email)
+exports.resetPassword = async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+    if (!token || !newPassword) {
+      return res.status(400).json({ success: false, message: 'Token and new password are required' });
+    }
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    }
+    const hash = hashToken(String(token).trim());
+    const user = await User.findOne({
+      passwordResetTokenHash: hash,
+      passwordResetExpires: { $gt: new Date() },
+    }).select('+password');
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired link. Request a new password reset from the login page.',
+      });
+    }
+    user.password = newPassword;
+    clearPasswordResetFields(user);
+    await user.save();
+    res.json({ success: true, message: 'Password updated. You can sign in now.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // @PUT /api/auth/update-profile
 exports.updateProfile = async (req, res) => {
   try {
     const { name, phone, avatar } = req.body;
-    const update = { name };
-    if (avatar !== undefined) update.avatar = avatar;
+    const update = {};
+    if (name !== undefined) update.name = name;
+    if (avatar !== undefined) update.avatar = typeof avatar === 'string' ? avatar.trim() : '';
     if (phone !== undefined) {
       const p = parsePhone(phone);
       if (!p.ok) return res.status(400).json({ success: false, message: p.message });
       update.phone = p.value;
     }
-    const user = await User.findByIdAndUpdate(req.user._id, update, { new: true, runValidators: true });
-    res.json({ success: true, user });
+    if (Object.keys(update).length === 0) {
+      const user = await User.findById(req.user._id).populate('departmentId', 'name slug color icon');
+      const u = user.toObject ? user.toObject() : user;
+      u.effectiveModulePermissions = resolveModulePermissions(user);
+      return res.json({ success: true, user: u });
+    }
+    const user = await User.findByIdAndUpdate(req.user._id, update, { new: true, runValidators: true })
+      .populate('departmentId', 'name slug color icon');
+    const u = user.toObject ? user.toObject() : user;
+    u.effectiveModulePermissions = resolveModulePermissions(user);
+    res.json({ success: true, user: u });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { resolveModulePermissions } = require('../utils/modulePermissions');
 
 // Super admin always has full access — never block them
 const SUPER_ROLES = ['super_admin', 'admin'];
@@ -18,6 +19,7 @@ exports.protect = async (req, res, next) => {
     if (!req.user || !req.user.isActive) {
       return res.status(401).json({ success: false, message: 'User not found or inactive' });
     }
+    req.effectiveModulePermissions = resolveModulePermissions(req.user);
     next();
   } catch (err) {
     return res.status(401).json({ success: false, message: 'Not authorized, invalid token' });

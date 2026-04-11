@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 
+const SERVICE_ENUM = ['SEO', 'Paid Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other'];
+
 const projectSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true },
   description: { type: String, default: '' },
@@ -8,10 +10,17 @@ const projectSchema = new mongoose.Schema({
   managerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   team: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   service: {
-    type: String,
-    enum: ['SEO', 'Paid Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other'],
-    required: true
+    type: [{ type: String, enum: SERVICE_ENUM }],
+    required: true,
+    validate: {
+      validator(v) {
+        return Array.isArray(v) && v.length > 0;
+      },
+      message: 'At least one service is required',
+    },
   },
+  /** When `service` includes "Other", user-specified label (e.g. "Influencer marketing"). */
+  serviceOtherDetail: { type: String, default: '', trim: true, maxlength: 200 },
   status: {
     type: String,
     enum: ['planning', 'active', 'on_hold', 'completed', 'cancelled'],
@@ -54,3 +63,4 @@ projectSchema.index({ departmentId: 1, status: 1 });
 projectSchema.index({ dueDate: 1 });
 
 module.exports = mongoose.model('Project', projectSchema);
+module.exports.SERVICE_ENUM = SERVICE_ENUM;

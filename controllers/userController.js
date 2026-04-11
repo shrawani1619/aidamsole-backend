@@ -1,7 +1,9 @@
 const User = require('../models/User');
 const Department = require('../models/Department');
-const bcrypt = require('bcryptjs');
 const { parsePhone } = require('../utils/phone');
+const { sanitizeModulePermissions, resolveModulePermissions } = require('../utils/modulePermissions');
+const { setPasswordResetToken } = require('../utils/passwordReset');
+const { sendWelcomeEmail } = require('../utils/email');
 
 // @GET /api/users
 exports.getUsers = async (req, res) => {
@@ -42,6 +44,18 @@ exports.createUser = async (req, res) => {
       await Department.findByIdAndUpdate(departmentId, { $addToSet: { members: user._id } });
     }
 
+    // Welcome email: temporary password + optional secure link to set password (1h)
+    (async () => {
+      try {
+        const raw = await setPasswordResetToken(user._id);
+        const base = (process.env.FRONTEND_URL || 'http://localhost:3000').split(',')[0].trim().replace(/\/+$/, '');
+        const setupUrl = `${base}/reset-password?token=${encodeURIComponent(raw)}`;
+        await sendWelcomeEmail(user, password, setupUrl);
+      } catch (err) {
+        console.error('[createUser] welcome email:', err.message || err);
+      }
+    })();
+
     const populatedUser = await User.findById(user._id).populate('departmentId', 'name slug color');
     res.status(201).json({ success: true, user: populatedUser });
   } catch (err) {
@@ -54,7 +68,31 @@ exports.getUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id).populate('departmentId');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    res.json({ success: true, user });
+    const u = user.toObject ? user.toObject() : user;
+    u.effectiveModulePermissions = resolveModulePermissions(user);
+    res.json({ success: true, user: u });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// @PUT /api/users/:id/permissions  (super_admin / admin only — route guard)
+exports.updateUserPermissions = async (req, res) => {
+  try {
+    const target = await User.findById(req.params.id);
+    if (!target) return res.status(404).json({ success: false, message: 'User not found' });
+    if (target.role === 'super_admin' && req.user.role !== 'super_admin') {
+      return res.status(403).json({ success: false, message: 'Cannot change super admin permissions' });
+    }
+
+    const sanitized = sanitizeModulePermissions(req.body.modulePermissions || {});
+    target.modulePermissions = Object.keys(sanitized).length ? sanitized : undefined;
+    await target.save();
+
+    const populated = await User.findById(target._id).populate('departmentId', 'name slug color');
+    const u = populated.toObject ? populated.toObject() : populated;
+    u.effectiveModulePermissions = resolveModulePermissions(populated);
+    res.json({ success: true, user: u });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

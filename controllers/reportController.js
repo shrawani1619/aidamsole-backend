@@ -6,6 +6,54 @@ const User = require('../models/User');
 const Department = require('../models/Department');
 const Report = require('../models/Report');
 const { v4: uuidv4 } = require('uuid');
+const { hasModuleAction } = require('../utils/modulePermissions');
+
+/** Strip KPI / sections the user is not allowed to see (field-level on dashboard module). */
+function filterInsightsPayload(data, resolved) {
+  const f = resolved.dashboard?.fields || {};
+  const kpis = { ...data.kpis };
+  if (f.mrr === false) delete kpis.mrr;
+  if (f.activeClients === false) {
+    delete kpis.activeClients;
+    delete kpis.totalClients;
+    delete kpis.churnedClients;
+    delete kpis.churnRate;
+  }
+  if (f.thisMonthRevenue === false) {
+    delete kpis.thisMonthRevenue;
+    delete kpis.lastMonthRevenue;
+    delete kpis.revenueGrowth;
+  }
+  if (f.delayedTasks === false) {
+    delete kpis.delayedTasks;
+    delete kpis.taskDelayRate;
+  }
+
+  let departments = data.departments;
+  if (f.deptPerformance === false) departments = [];
+
+  let topClients = data.topClients;
+  let riskClients = data.riskClients;
+  if (f.clientHealth === false) {
+    topClients = [];
+    riskClients = [];
+  } else {
+    if (f.topClients === false) topClients = [];
+    if (f.riskClients === false) riskClients = [];
+  }
+
+  let revenueHistory = data.revenueHistory;
+  if (f.revenueHistory === false) revenueHistory = [];
+
+  return {
+    ...data,
+    kpis,
+    departments,
+    topClients,
+    riskClients,
+    revenueHistory,
+  };
+}
 
 // Helper: build date range
 const getDateRange = (range, startDate, endDate) => {
@@ -371,6 +419,11 @@ exports.getOperationalReport = async (req, res) => {
 // ─── SUPER ADMIN DASHBOARD INSIGHTS ──────────────────────────────────────────
 exports.getSuperAdminInsights = async (req, res) => {
   try {
+    const resolved = req.effectiveModulePermissions;
+    if (!hasModuleAction(resolved, 'dashboard', 'view')) {
+      return res.status(403).json({ success: false, message: 'No access to dashboard insights' });
+    }
+
     const now = new Date();
     const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -430,29 +483,33 @@ exports.getSuperAdminInsights = async (req, res) => {
       { $sort: { '_id.year': 1, '_id.month': 1 } }
     ]);
 
-    res.json({
-      success: true,
-      data: {
-        kpis: {
-          totalClients: clients,
-          activeClients,
-          churnedClients: churned,
-          churnRate: clients > 0 ? ((churned / clients) * 100).toFixed(1) : 0,
-          mrr: mrr[0]?.total || 0,
-          thisMonthRevenue: thisMonthRev,
-          lastMonthRevenue: lastMonthRev,
-          revenueGrowth: parseFloat(revenueGrowth),
-          totalUsers: users,
-          openTasks,
-          delayedTasks,
-          taskDelayRate: openTasks > 0 ? Math.round((delayedTasks / openTasks) * 100) : 0
-        },
-        departments: deptPerf,
-        topClients: allClients.slice(0, 5),
-        riskClients: allClients.filter(c => (c.healthScore?.overall || 0) < 5).slice(0, 5),
-        revenueHistory
-      }
-    });
+    const rawData = {
+      kpis: {
+        totalClients: clients,
+        activeClients,
+        churnedClients: churned,
+        churnRate: clients > 0 ? ((churned / clients) * 100).toFixed(1) : 0,
+        mrr: mrr[0]?.total || 0,
+        thisMonthRevenue: thisMonthRev,
+        lastMonthRevenue: lastMonthRev,
+        revenueGrowth: parseFloat(revenueGrowth),
+        totalUsers: users,
+        openTasks,
+        delayedTasks,
+        taskDelayRate: openTasks > 0 ? Math.round((delayedTasks / openTasks) * 100) : 0
+      },
+      departments: deptPerf,
+      topClients: allClients.slice(0, 5),
+      riskClients: allClients.filter(c => (c.healthScore?.overall || 0) < 5).slice(0, 5),
+      revenueHistory
+    };
+
+    const data =
+      ['super_admin', 'admin'].includes(req.user.role)
+        ? rawData
+        : filterInsightsPayload(rawData, resolved);
+
+    res.json({ success: true, data });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

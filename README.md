@@ -78,9 +78,33 @@ Server runs on **http://localhost:5000**
 |--------|----------|-------------|
 | GET | `/api/users` | List users (dept-scoped) |
 | POST | `/api/users` | Create user |
-| GET | `/api/users/:id` | Get user |
+| GET | `/api/users/:id` | Get user (includes `effectiveModulePermissions` when populated) |
 | PUT | `/api/users/:id` | Update user |
+| PUT | `/api/users/:id/permissions` | Set `modulePermissions` overrides (super_admin / admin only) |
 | DELETE | `/api/users/:id` | Deactivate user |
+
+### Permissions (super_admin / admin)
+Module-based ACL: each user can have optional `modulePermissions` merged with **role defaults** (`utils/modulePermissions.js`). Actions are `view`, `create`, `edit`, `delete` per module; `dashboard` and `reports` support extra **fields** (e.g. hide MRR, report tabs).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/permissions/schema` | Lists module ids, actions, dashboard field keys, reports field keys, and labels for admin UIs |
+| GET | `/api/permissions/defaults/:role` | Effective matrix for a role with no per-user overrides (`role` = `super_admin` \| `admin` \| `department_manager` \| `employee`) |
+| GET | `/api/permissions/user/:userId` | `modulePermissions` stored on user + resolved `effectiveModulePermissions` |
+| PUT | `/api/permissions/user/:userId` | Body: `{ "modulePermissions": { ... } }` — same behavior as `PUT /api/users/:id/permissions` |
+
+**PUT body shape** (partial per module; omitted modules keep role defaults):
+
+```json
+{
+  "modulePermissions": {
+    "dashboard": { "view": true, "fields": { "mrr": false } },
+    "clients": { "view": true, "create": false, "edit": true, "delete": false }
+  }
+}
+```
+
+Send `{}` or clear overrides by saving empty sanitized object to fall back to role defaults (see controller).
 
 ### Departments
 | Method | Endpoint | Description |

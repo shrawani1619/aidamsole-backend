@@ -2,6 +2,51 @@ const Project = require('../models/Project');
 const Task = require('../models/Task');
 const Notification = require('../models/Notification');
 
+const SERVICE_ENUM = Project.SERVICE_ENUM || [
+  'SEO', 'Paid Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other',
+];
+
+/** Accept legacy string or array; return deduped valid enum values (min length 0). */
+function normalizeServiceInput(raw) {
+  if (raw == null) return [];
+  const list = Array.isArray(raw) ? raw : [raw];
+  const seen = new Set();
+  const out = [];
+  for (const x of list) {
+    const s = typeof x === 'string' ? x.trim() : '';
+    if (s && SERVICE_ENUM.includes(s) && !seen.has(s)) {
+      seen.add(s);
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+/** API responses: legacy DB may still have a string until migration runs. */
+function normalizeServiceOut(doc) {
+  if (!doc || doc.service == null) return doc;
+  doc.service = normalizeServiceInput(doc.service);
+  return doc;
+}
+
+/** Budget / spend visible only to leadership — not regular employees. */
+function canViewProjectBudget(user) {
+  return user && ['super_admin', 'admin', 'department_manager'].includes(user.role);
+}
+
+function stripBudgetFieldsFromBody(body, user) {
+  if (!body || canViewProjectBudget(user)) return;
+  delete body.budget;
+  delete body.spent;
+}
+
+/** Mutates plain project objects (lean / toObject). */
+function redactProjectFinancialsInPlace(project, user) {
+  if (!project || canViewProjectBudget(user)) return;
+  delete project.budget;
+  delete project.spent;
+}
+
 // @GET /api/projects
 exports.getProjects = async (req, res) => {
   try {
@@ -33,6 +78,11 @@ exports.getProjects = async (req, res) => {
       Project.countDocuments(filter)
     ]);
 
+    projects.forEach((p) => {
+      normalizeServiceOut(p);
+      redactProjectFinancialsInPlace(p, req.user);
+    });
+
     res.json({ success: true, count: projects.length, total, page, pages: Math.ceil(total / limit), projects });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -42,12 +92,29 @@ exports.getProjects = async (req, res) => {
 // @POST /api/projects
 exports.createProject = async (req, res) => {
   try {
-    const project = await Project.create({ ...req.body });
+    const body = { ...req.body };
+    body.service = normalizeServiceInput(body.service);
+    if (!body.service.length) {
+      return res.status(400).json({ success: false, message: 'Select at least one service' });
+    }
+    if (!body.service.includes('Other')) {
+      body.serviceOtherDetail = '';
+    } else {
+      const d = (body.serviceOtherDetail || '').toString().trim();
+      if (!d) {
+        return res.status(400).json({ success: false, message: 'Please describe the other service' });
+      }
+      body.serviceOtherDetail = d.slice(0, 200);
+    }
+    stripBudgetFieldsFromBody(body, req.user);
+    const project = await Project.create(body);
     const populated = await Project.findById(project._id)
       .populate('clientId', 'name company logo')
       .populate('departmentId', 'name slug color')
       .populate('managerId', 'name email avatar')
-      .populate('team', 'name email avatar');
+      .populate('team', 'name email avatar')
+      .lean();
+    redactProjectFinancialsInPlace(populated, req.user);
 
     // Notify team members
     if (req.body.team && req.body.team.length) {
@@ -75,8 +142,11 @@ exports.getProject = async (req, res) => {
       .populate('clientId', 'name company logo status healthScore assignedAM')
       .populate('departmentId', 'name slug color icon')
       .populate('managerId', 'name email avatar phone')
-      .populate('team', 'name email avatar role departmentRole');
+      .populate('team', 'name email avatar role departmentRole')
+      .lean();
     if (!project) return res.status(404).json({ success: false, message: 'Project not found' });
+    normalizeServiceOut(project);
+    redactProjectFinancialsInPlace(project, req.user);
 
     // Task summary
     const taskStats = await Task.aggregate([
@@ -93,12 +163,38 @@ exports.getProject = async (req, res) => {
 // @PUT /api/projects/:id
 exports.updateProject = async (req, res) => {
   try {
-    const project = await Project.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true })
+    const body = { ...req.body };
+    stripBudgetFieldsFromBody(body, req.user);
+    if (body.service !== undefined) {
+      body.service = normalizeServiceInput(body.service);
+      if (!body.service.length) {
+        return res.status(400).json({ success: false, message: 'Select at least one service' });
+      }
+    }
+    if (body.service !== undefined && !body.service.includes('Other')) {
+      body.serviceOtherDetail = '';
+    } else if (body.service !== undefined && body.service.includes('Other')) {
+      const existing = await Project.findById(req.params.id).select('serviceOtherDetail').lean();
+      if (!existing) return res.status(404).json({ success: false, message: 'Project not found' });
+      const merged = body.serviceOtherDetail !== undefined
+        ? String(body.serviceOtherDetail).trim()
+        : (existing.serviceOtherDetail || '').toString().trim();
+      if (!merged) {
+        return res.status(400).json({ success: false, message: 'Please describe the other service' });
+      }
+      body.serviceOtherDetail = merged.slice(0, 200);
+    } else if (body.serviceOtherDetail !== undefined && typeof body.serviceOtherDetail === 'string') {
+      body.serviceOtherDetail = body.serviceOtherDetail.trim().slice(0, 200);
+    }
+    const project = await Project.findByIdAndUpdate(req.params.id, body, { new: true, runValidators: true })
       .populate('clientId', 'name company logo')
       .populate('departmentId', 'name slug color')
       .populate('managerId', 'name email avatar')
-      .populate('team', 'name email avatar');
+      .populate('team', 'name email avatar')
+      .lean();
     if (!project) return res.status(404).json({ success: false, message: 'Project not found' });
+    normalizeServiceOut(project);
+    redactProjectFinancialsInPlace(project, req.user);
     res.json({ success: true, project });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -128,7 +224,10 @@ exports.updateMilestone = async (req, res) => {
       : 0;
     await project.save();
 
-    res.json({ success: true, project });
+    const out = project.toObject ? project.toObject() : { ...project };
+    normalizeServiceOut(out);
+    redactProjectFinancialsInPlace(out, req.user);
+    res.json({ success: true, project: out });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -137,9 +236,10 @@ exports.updateMilestone = async (req, res) => {
 // @DELETE /api/projects/:id
 exports.deleteProject = async (req, res) => {
   try {
-    const project = await Project.findByIdAndUpdate(req.params.id, { status: 'cancelled' }, { new: true });
+    const project = await Project.findByIdAndUpdate(req.params.id, { status: 'cancelled' }, { new: true }).lean();
     if (!project) return res.status(404).json({ success: false, message: 'Project not found' });
-    res.json({ success: true, message: 'Project cancelled' });
+    redactProjectFinancialsInPlace(project, req.user);
+    res.json({ success: true, message: 'Project cancelled', project });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

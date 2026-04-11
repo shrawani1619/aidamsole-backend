@@ -90,6 +90,7 @@ function redactMongoUri(uri) {
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
+app.use('/api/permissions', require('./routes/permissions'));
 app.use('/api/departments', require('./routes/departments'));
 app.use('/api/clients', require('./routes/clients'));
 app.use('/api/projects', require('./routes/projects'));
