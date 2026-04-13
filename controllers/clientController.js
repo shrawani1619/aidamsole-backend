@@ -29,14 +29,19 @@ exports.getClients = async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const skip = (page - 1) * limit;
 
+    let listQuery = Client.find(filter)
+      .populate('assignedAM', 'name email avatar')
+      .populate('assignedDepartments', 'name slug color')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    if (!isClientAdmin(req.user)) {
+      listQuery = listQuery.select('-contractValue');
+    }
+
     const [clients, total] = await Promise.all([
-      Client.find(filter)
-        .populate('assignedAM', 'name email avatar')
-        .populate('assignedDepartments', 'name slug color')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
+      listQuery.lean(),
       Client.countDocuments(filter)
     ]);
 
@@ -59,12 +64,16 @@ exports.createClient = async (req, res) => {
 
     if (!isClientAdmin(req.user)) {
       data.assignedAM = req.user._id;
+      delete data.contractValue;
     }
 
     const client = await Client.create(data);
     const populated = await Client.findById(client._id)
       .populate('assignedAM', 'name email avatar')
       .populate('assignedDepartments', 'name slug color');
+
+    const createdOut = populated.toObject ? populated.toObject() : populated;
+    if (!isClientAdmin(req.user)) delete createdOut.contractValue;
 
     // Notify AM
     if (data.assignedAM) {
@@ -78,7 +87,7 @@ exports.createClient = async (req, res) => {
       });
     }
 
-    res.status(201).json({ success: true, client: populated });
+    res.status(201).json({ success: true, client: createdOut });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -96,6 +105,11 @@ exports.getClient = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
+    const clientOut = client.toObject ? client.toObject() : { ...client };
+    if (!isClientAdmin(req.user)) {
+      delete clientOut.contractValue;
+    }
+
     // Fetch related stats
     const [projectCount, invoiceStats] = await Promise.all([
       Project.countDocuments({ clientId: client._id }),
@@ -107,7 +121,7 @@ exports.getClient = async (req, res) => {
 
     res.json({
       success: true,
-      client,
+      client: clientOut,
       stats: {
         projects: projectCount,
         totalBilled: invoiceStats[0]?.total || 0,
@@ -136,12 +150,15 @@ exports.updateClient = async (req, res) => {
     }
     if (!isClientAdmin(req.user)) {
       delete payload.assignedAM;
+      delete payload.contractValue;
     }
     const client = await Client.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true })
       .populate('assignedAM', 'name email avatar')
       .populate('assignedDepartments', 'name slug color');
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-    res.json({ success: true, client });
+    const updatedOut = client.toObject ? client.toObject() : client;
+    if (!isClientAdmin(req.user)) delete updatedOut.contractValue;
+    res.json({ success: true, client: updatedOut });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
