@@ -2,7 +2,7 @@ const Project = require('../models/Project');
 const Client = require('../models/Client');
 const Task = require('../models/Task');
 const Notification = require('../models/Notification');
-const { isClientAdmin, clientIdsForAssignedAm } = require('../utils/clientScope');
+const { isClientAdmin, clientIdsForAssignedAm, userHasClientAccess } = require('../utils/clientScope');
 
 const SERVICE_ENUM = Project.SERVICE_ENUM || [
   'SEO', 'Paid Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other',
@@ -120,8 +120,8 @@ exports.createProject = async (req, res) => {
     stripBudgetFieldsFromBody(body, req.user);
 
     if (!isClientAdmin(req.user)) {
-      const c = await Client.findById(body.clientId).select('assignedAM').lean();
-      if (!c || String(c.assignedAM) !== String(req.user._id)) {
+      const c = await Client.findById(body.clientId).select('assignedAM projectManager').lean();
+      if (!c || !userHasClientAccess(req.user._id, c)) {
         return res.status(403).json({
           success: false,
           message: 'You can only create projects for clients assigned to you',
@@ -161,16 +161,14 @@ exports.createProject = async (req, res) => {
 exports.getProject = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id)
-      .populate('clientId', 'name company logo status healthScore assignedAM')
+      .populate('clientId', 'name company logo status healthScore assignedAM projectManager')
       .populate('departmentId', 'name slug color icon')
       .populate('managerId', 'name email avatar phone')
       .populate('team', 'name email avatar role departmentRole')
       .lean();
     if (!project) return res.status(404).json({ success: false, message: 'Project not found' });
     if (!isClientAdmin(req.user)) {
-      const am = project.clientId?.assignedAM;
-      const amId = am && am._id != null ? am._id : am;
-      if (!project.clientId || String(amId) !== String(req.user._id)) {
+      if (!project.clientId || !userHasClientAccess(req.user._id, project.clientId)) {
         return res.status(404).json({ success: false, message: 'Project not found' });
       }
     }
@@ -192,12 +190,10 @@ exports.getProject = async (req, res) => {
 // @PUT /api/projects/:id
 exports.updateProject = async (req, res) => {
   try {
-    const existingProj = await Project.findById(req.params.id).populate('clientId', 'assignedAM').lean();
+    const existingProj = await Project.findById(req.params.id).populate('clientId', 'assignedAM projectManager').lean();
     if (!existingProj) return res.status(404).json({ success: false, message: 'Project not found' });
     if (!isClientAdmin(req.user)) {
-      const am = existingProj.clientId?.assignedAM;
-      const amId = am && am._id != null ? am._id : am;
-      if (!existingProj.clientId || String(amId) !== String(req.user._id)) {
+      if (!existingProj.clientId || !userHasClientAccess(req.user._id, existingProj.clientId)) {
         return res.status(404).json({ success: false, message: 'Project not found' });
       }
     }
@@ -249,12 +245,10 @@ exports.updateProject = async (req, res) => {
 // @PUT /api/projects/:id/milestone
 exports.updateMilestone = async (req, res) => {
   try {
-    const pre = await Project.findById(req.params.id).populate('clientId', 'assignedAM').lean();
+    const pre = await Project.findById(req.params.id).populate('clientId', 'assignedAM projectManager').lean();
     if (!pre) return res.status(404).json({ success: false, message: 'Project not found' });
     if (!isClientAdmin(req.user)) {
-      const am = pre.clientId?.assignedAM;
-      const amId = am && am._id != null ? am._id : am;
-      if (!pre.clientId || String(amId) !== String(req.user._id)) {
+      if (!pre.clientId || !userHasClientAccess(req.user._id, pre.clientId)) {
         return res.status(404).json({ success: false, message: 'Project not found' });
       }
     }
@@ -291,12 +285,10 @@ exports.updateMilestone = async (req, res) => {
 // @DELETE /api/projects/:id
 exports.deleteProject = async (req, res) => {
   try {
-    const pre = await Project.findById(req.params.id).populate('clientId', 'assignedAM').lean();
+    const pre = await Project.findById(req.params.id).populate('clientId', 'assignedAM projectManager').lean();
     if (!pre) return res.status(404).json({ success: false, message: 'Project not found' });
     if (!isClientAdmin(req.user)) {
-      const am = pre.clientId?.assignedAM;
-      const amId = am && am._id != null ? am._id : am;
-      if (!pre.clientId || String(amId) !== String(req.user._id)) {
+      if (!pre.clientId || !userHasClientAccess(req.user._id, pre.clientId)) {
         return res.status(404).json({ success: false, message: 'Project not found' });
       }
     }
@@ -321,12 +313,10 @@ exports.deleteProject = async (req, res) => {
 // @GET /api/projects/:id/tasks
 exports.getProjectTasks = async (req, res) => {
   try {
-    const pre = await Project.findById(req.params.id).populate('clientId', 'assignedAM').lean();
+    const pre = await Project.findById(req.params.id).populate('clientId', 'assignedAM projectManager').lean();
     if (!pre) return res.status(404).json({ success: false, message: 'Project not found' });
     if (!isClientAdmin(req.user)) {
-      const am = pre.clientId?.assignedAM;
-      const amId = am && am._id != null ? am._id : am;
-      if (!pre.clientId || String(amId) !== String(req.user._id)) {
+      if (!pre.clientId || !userHasClientAccess(req.user._id, pre.clientId)) {
         return res.status(404).json({ success: false, message: 'Project not found' });
       }
     }

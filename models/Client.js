@@ -24,6 +24,8 @@ const clientSchema = new mongoose.Schema({
     street: String, city: String, state: String, country: String, pincode: String
   },
   assignedAM: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  /** Delivery / ops owner — sees the same client as the account manager when set */
+  projectManager: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   assignedDepartments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Department' }],
   services: [{
     type: String,
@@ -59,6 +61,7 @@ const clientSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 clientSchema.index({ status: 1, assignedAM: 1 });
+clientSchema.index({ projectManager: 1 });
 clientSchema.index({ 'healthScore.overall': 1 });
 
 module.exports = mongoose.model('Client', clientSchema);

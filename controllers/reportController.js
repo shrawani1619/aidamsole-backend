@@ -182,7 +182,12 @@ exports.getClientPerformanceReport = async (req, res) => {
           req.scopeDepartments.length === 1
             ? req.scopeDepartments[0]
             : { $in: req.scopeDepartments };
-      } else if (req.scopeUser) clientFilter.assignedAM = req.scopeUser;
+      } else if (req.scopeUser) {
+        clientFilter.$or = [
+          { assignedAM: req.scopeUser },
+          { projectManager: req.scopeUser },
+        ];
+      }
     }
 
     const clients = await Client.find(clientFilter)

@@ -5,17 +5,17 @@ const Department = require('../models/Department');
 const Project = require('../models/Project');
 const Client = require('../models/Client');
 const { logActivity } = require('../utils/logActivity');
-const { isClientAdmin, clientIdsForAssignedAm } = require('../utils/clientScope');
+const { isClientAdmin, clientIdsForAssignedAm, userHasClientAccess } = require('../utils/clientScope');
 const { userBelongsToAnyDepartmentClause } = require('../utils/departmentScope');
 
 const toOid = (v) => (v && String(v).trim() ? v : null);
 
-/** Non-admins may only access tasks belonging to clients where they are assigned AM */
+/** Non-admins may only access tasks for clients where they are AM or project manager */
 async function userOwnsClientForTask(req, clientId) {
   if (!clientId) return false;
   if (isClientAdmin(req.user)) return true;
-  const c = await Client.findById(clientId).select('assignedAM').lean();
-  return !!(c && String(c.assignedAM) === String(req.user._id));
+  const c = await Client.findById(clientId).select('assignedAM projectManager').lean();
+  return !!(c && userHasClientAccess(req.user._id, c));
 }
 
 /** Unique non-null ObjectIds from mixed inputs (string, populated doc, etc.) */

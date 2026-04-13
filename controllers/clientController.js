@@ -4,26 +4,32 @@ const Project = require('../models/Project');
 const Invoice = require('../models/Invoice');
 const Notification = require('../models/Notification');
 const { v4: uuidv4 } = require('uuid');
-const { isClientAdmin, clientAssignedAmEquals } = require('../utils/clientScope');
+const { isClientAdmin, userHasClientAccess } = require('../utils/clientScope');
 
 // @GET /api/clients
 exports.getClients = async (req, res) => {
   try {
-    const filter = {};
-    if (req.query.status) filter.status = req.query.status;
-    if (req.query.service) filter.services = req.query.service;
+    const and = [];
+    if (req.query.status) and.push({ status: req.query.status });
+    if (req.query.service) and.push({ services: req.query.service });
     if (req.query.search) {
-      filter.$or = [
-        { name: { $regex: req.query.search, $options: 'i' } },
-        { company: { $regex: req.query.search, $options: 'i' } },
-        { email: { $regex: req.query.search, $options: 'i' } }
-      ];
+      and.push({
+        $or: [
+          { name: { $regex: req.query.search, $options: 'i' } },
+          { company: { $regex: req.query.search, $options: 'i' } },
+          { email: { $regex: req.query.search, $options: 'i' } }
+        ]
+      });
     }
-
-    // Non-admins only see clients where they are the assigned account manager
     if (!isClientAdmin(req.user)) {
-      filter.assignedAM = req.user._id;
+      and.push({
+        $or: [
+          { assignedAM: req.user._id },
+          { projectManager: req.user._id }
+        ]
+      });
     }
+    const filter = and.length ? { $and: and } : {};
 
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
@@ -31,6 +37,7 @@ exports.getClients = async (req, res) => {
 
     let listQuery = Client.find(filter)
       .populate('assignedAM', 'name email avatar')
+      .populate('projectManager', 'name email avatar')
       .populate('assignedDepartments', 'name slug color')
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -70,6 +77,7 @@ exports.createClient = async (req, res) => {
     const client = await Client.create(data);
     const populated = await Client.findById(client._id)
       .populate('assignedAM', 'name email avatar')
+      .populate('projectManager', 'name email avatar')
       .populate('assignedDepartments', 'name slug color');
 
     const createdOut = populated.toObject ? populated.toObject() : populated;
@@ -86,6 +94,16 @@ exports.createClient = async (req, res) => {
         priority: 'high'
       });
     }
+    if (data.projectManager && String(data.projectManager) !== String(data.assignedAM)) {
+      await Notification.create({
+        userId: data.projectManager,
+        type: 'client',
+        title: 'Project manager assignment',
+        message: `${client.company} — you were assigned as project manager`,
+        link: `/clients/${client._id}`,
+        priority: 'medium'
+      });
+    }
 
     res.status(201).json({ success: true, client: createdOut });
   } catch (err) {
@@ -98,10 +116,11 @@ exports.getClient = async (req, res) => {
   try {
     const client = await Client.findById(req.params.id)
       .populate('assignedAM', 'name email avatar phone')
+      .populate('projectManager', 'name email avatar phone')
       .populate('assignedDepartments', 'name slug color icon')
       .populate('referredBy', 'name company');
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-    if (!isClientAdmin(req.user) && !clientAssignedAmEquals(req.user._id, client)) {
+    if (!isClientAdmin(req.user) && !userHasClientAccess(req.user._id, client)) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
@@ -138,7 +157,7 @@ exports.updateClient = async (req, res) => {
   try {
     const existing = await Client.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ success: false, message: 'Client not found' });
-    if (!isClientAdmin(req.user) && String(existing.assignedAM) !== String(req.user._id)) {
+    if (!isClientAdmin(req.user) && !userHasClientAccess(req.user._id, existing)) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
@@ -150,10 +169,12 @@ exports.updateClient = async (req, res) => {
     }
     if (!isClientAdmin(req.user)) {
       delete payload.assignedAM;
+      delete payload.projectManager;
       delete payload.contractValue;
     }
     const client = await Client.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true })
       .populate('assignedAM', 'name email avatar')
+      .populate('projectManager', 'name email avatar')
       .populate('assignedDepartments', 'name slug color');
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
     const updatedOut = client.toObject ? client.toObject() : client;
@@ -172,7 +193,7 @@ exports.updateHealthScore = async (req, res) => {
 
     const existing = await Client.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ success: false, message: 'Client not found' });
-    if (!isClientAdmin(req.user) && String(existing.assignedAM) !== String(req.user._id)) {
+    if (!isClientAdmin(req.user) && !userHasClientAccess(req.user._id, existing)) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
@@ -200,16 +221,21 @@ exports.updateHealthScore = async (req, res) => {
       await client.save();
     }
 
-    // Alert if red
-    if (overall < 5 && client.assignedAM) {
-      await Notification.create({
-        userId: client.assignedAM,
-        type: 'health_alert',
-        title: '🚨 Client At Risk',
-        message: `${client.company} health score dropped to ${overall}. Immediate action required.`,
-        link: `/clients/${client._id}`,
-        priority: 'high'
-      });
+    // Alert if red — notify AM and project manager (dedupe same user)
+    if (overall < 5) {
+      const recipients = new Set();
+      if (client.assignedAM) recipients.add(String(client.assignedAM));
+      if (client.projectManager) recipients.add(String(client.projectManager));
+      for (const uid of recipients) {
+        await Notification.create({
+          userId: uid,
+          type: 'health_alert',
+          title: '🚨 Client At Risk',
+          message: `${client.company} health score dropped to ${overall}. Immediate action required.`,
+          link: `/clients/${client._id}`,
+          priority: 'high'
+        });
+      }
     }
 
     res.json({ success: true, client });
@@ -223,7 +249,7 @@ exports.deleteClient = async (req, res) => {
   try {
     const existing = await Client.findById(req.params.id).lean();
     if (!existing) return res.status(404).json({ success: false, message: 'Client not found' });
-    if (!isClientAdmin(req.user) && String(existing.assignedAM) !== String(req.user._id)) {
+    if (!isClientAdmin(req.user) && !userHasClientAccess(req.user._id, existing)) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
@@ -256,9 +282,9 @@ exports.deleteClient = async (req, res) => {
 // @GET /api/clients/:id/timeline
 exports.getClientTimeline = async (req, res) => {
   try {
-    const clientRow = await Client.findById(req.params.id).select('assignedAM').lean();
+    const clientRow = await Client.findById(req.params.id).select('assignedAM projectManager').lean();
     if (!clientRow) return res.status(404).json({ success: false, message: 'Client not found' });
-    if (!isClientAdmin(req.user) && String(clientRow.assignedAM) !== String(req.user._id)) {
+    if (!isClientAdmin(req.user) && !userHasClientAccess(req.user._id, clientRow)) {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 

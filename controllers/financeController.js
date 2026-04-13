@@ -107,17 +107,20 @@ exports.markPaid = async (req, res) => {
       req.params.id,
       { status: 'paid', paidDate: new Date(), paidAmount, paymentMethod, paymentReference },
       { new: true }
-    ).populate('clientId', 'name company assignedAM');
+    ).populate('clientId', 'name company assignedAM projectManager');
 
     if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
 
-    // Notify AM
-    if (invoice.clientId?.assignedAM) {
+    const cid = invoice.clientId;
+    const notifyIds = new Set();
+    if (cid?.assignedAM) notifyIds.add(String(cid.assignedAM._id || cid.assignedAM));
+    if (cid?.projectManager) notifyIds.add(String(cid.projectManager._id || cid.projectManager));
+    for (const uid of notifyIds) {
       await Notification.create({
-        userId: invoice.clientId.assignedAM,
+        userId: uid,
         type: 'invoice',
         title: '💰 Payment Received',
-        message: `${invoice.clientId.company} paid invoice ${invoice.invoiceNumber} — ₹${paidAmount.toLocaleString('en-IN')}`,
+        message: `${cid.company} paid invoice ${invoice.invoiceNumber} — ₹${paidAmount.toLocaleString('en-IN')}`,
         link: `/finance/invoices/${invoice._id}`,
         priority: 'high'
       });

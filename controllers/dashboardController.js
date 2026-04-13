@@ -22,8 +22,10 @@ exports.getDashboard = async (req, res) => {
     let myClientIds = [];
 
     if (!isAdmin) {
-      myClientIds = await Client.find({ assignedAM: user._id }).distinct('_id');
-      clientFilter.assignedAM = user._id;
+      myClientIds = await Client.find({
+        $or: [{ assignedAM: user._id }, { projectManager: user._id }],
+      }).distinct('_id');
+      clientFilter.$or = [{ assignedAM: user._id }, { projectManager: user._id }];
       projectFilter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
       taskFilter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
     }
@@ -128,14 +130,24 @@ exports.getDashboard = async (req, res) => {
 // @GET /api/dashboard/health-scores
 exports.getHealthScores = async (req, res) => {
   try {
-    const filter = { status: { $in: ['active', 'at_risk'] } };
-    if (!isClientAdmin(req.user)) {
-      filter.assignedAM = req.user._id;
-    }
+    const filter = !isClientAdmin(req.user)
+      ? {
+          $and: [
+            { status: { $in: ['active', 'at_risk'] } },
+            {
+              $or: [
+                { assignedAM: req.user._id },
+                { projectManager: req.user._id },
+              ],
+            },
+          ],
+        }
+      : { status: { $in: ['active', 'at_risk'] } };
 
     const clients = await Client.find(filter)
-      .select('name company healthScore status assignedAM renewalDate')
+      .select('name company healthScore status assignedAM projectManager renewalDate')
       .populate('assignedAM', 'name avatar')
+      .populate('projectManager', 'name avatar')
       .sort({ 'healthScore.overall': 1 })
       .lean();
 
