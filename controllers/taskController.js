@@ -1,6 +1,10 @@
 const Task = require('../models/Task');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
+const Department = require('../models/Department');
+const Project = require('../models/Project');
 const { logActivity } = require('../utils/logActivity');
+const { userBelongsToAnyDepartmentClause } = require('../utils/departmentScope');
 
 const toOid = (v) => (v && String(v).trim() ? v : null);
 
@@ -141,6 +145,45 @@ exports.getTasks = async (req, res) => {
     ]);
 
     res.json({ success: true, count: tasks.length, total, page, pages: Math.ceil(total / limit), tasks });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// @GET /api/tasks/meta
+// Task form support data without requiring Team/Departments module access.
+exports.getTaskMeta = async (req, res) => {
+  try {
+    const usersFilter = { deletedAt: null, isActive: true };
+    if (!req.scopeAll && req.scopeDepartments?.length) {
+      usersFilter.$and = [userBelongsToAnyDepartmentClause(req.scopeDepartments)];
+    }
+
+    const departmentsFilter = { isActive: true };
+    if (!req.scopeAll && req.scopeDepartments?.length) {
+      departmentsFilter._id =
+        req.scopeDepartments.length === 1
+          ? req.scopeDepartments[0]
+          : { $in: req.scopeDepartments };
+    }
+
+    const [users, departments, projects] = await Promise.all([
+      User.find(usersFilter).select('name email avatar role departmentId departmentMemberships').sort('name').lean(),
+      Department.find(departmentsFilter).select('name slug color').sort('name').lean(),
+      Project.find({})
+        .select('title clientId departmentId status')
+        .populate('clientId', 'company name')
+        .populate('departmentId', 'name slug color')
+        .sort({ createdAt: -1 })
+        .lean(),
+    ]);
+
+    res.json({
+      success: true,
+      users,
+      departments,
+      projects,
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

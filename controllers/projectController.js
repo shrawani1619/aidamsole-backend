@@ -64,8 +64,10 @@ exports.getProjects = async (req, res) => {
           req.scopeDepartments.length === 1
             ? req.scopeDepartments[0]
             : { $in: req.scopeDepartments };
+      } else if (req.scopeUser) {
+        // Fallback for legacy users without department scope.
+        filter.$or = [{ managerId: req.scopeUser }, { team: req.scopeUser }];
       }
-      if (req.scopeUser) filter.$or = [{ managerId: req.scopeUser }, { team: req.scopeUser }];
     }
 
     const page = parseInt(req.query.page) || 1;

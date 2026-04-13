@@ -113,6 +113,70 @@ app.get('/api/health', (req, res) => {
 // Socket.io chat logic
 const connectedUsers = {};
 
+/**
+ * Reusable real-time notification broadcaster.
+ * Emits a generic event plus domain-specific aliases.
+ */
+function sendNotification(data = {}) {
+  const payload = {
+    id: data.id || `notif_${Date.now()}`,
+    type: data.type || 'system',
+    title: data.title || 'Notification',
+    message: data.message || 'You have a new update',
+    ...data,
+    timestamp: data.timestamp || new Date().toISOString(),
+  };
+
+  io.emit('new_notification', payload);
+  // Backward compatibility for existing frontend listeners.
+  io.emit('notification:new', payload);
+
+  if (payload.type === 'message') {
+    io.emit('message:new', payload);
+  }
+  if (payload.type === 'order_status') {
+    io.emit('order:status_updated', payload);
+  }
+
+  return payload;
+}
+
+const handleTestNotification = (req, res) => {
+  const { type = 'message' } = req.query;
+  const customPayload = req.body || {};
+
+  let payload;
+  if (type === 'order_status') {
+    payload = sendNotification({
+      type: 'order_status',
+      title: 'Order Update',
+      message: 'Order #1234 status changed',
+      orderId: '1234',
+      status: 'shipped',
+      ...customPayload,
+    });
+  } else {
+    payload = sendNotification({
+      type: 'message',
+      title: 'New Message',
+      message: 'You received a new message',
+      senderName: 'System Bot',
+      ...customPayload,
+    });
+  }
+
+  res.json({
+    success: true,
+    message: 'Notification broadcasted',
+    payload,
+  });
+};
+
+app.post('/api/test-notification', handleTestNotification);
+app.post('/test-notification', handleTestNotification);
+app.get('/api/test-notification', handleTestNotification);
+app.get('/test-notification', handleTestNotification);
+
 io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.id}`);
 
@@ -145,6 +209,28 @@ io.on('connection', (socket) => {
 
   socket.on('task:update', (data) => {
     io.emit('task:updated', data);
+  });
+
+  // Example event for new message broadcasts.
+  socket.on('message:notify', (data) => {
+    sendNotification({
+      type: 'message',
+      title: 'New Message',
+      message: data?.message || 'You received a new message',
+      conversationId: data?.conversationId,
+      senderId: data?.senderId,
+    });
+  });
+
+  // Example event for order status updates in commerce flows.
+  socket.on('order:status', (data) => {
+    sendNotification({
+      type: 'order_status',
+      title: 'Order Status Updated',
+      message: data?.message || 'Order status changed',
+      orderId: data?.orderId,
+      status: data?.status,
+    });
   });
 
   socket.on('disconnect', () => {
@@ -205,4 +291,4 @@ async function start() {
 
 start();
 
-module.exports = { app, io };
+module.exports = { app, io, sendNotification };

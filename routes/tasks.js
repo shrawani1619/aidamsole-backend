@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const {
-  getTasks, createTask, getTask, updateTask, deleteTask,
+  getTasks, getTaskMeta, createTask, getTask, updateTask, deleteTask,
   twoEyeApprove, reassignTask, addComment, logTime, updateSubtask
 } = require('../controllers/taskController');
 const { protect, departmentScope } = require('../middleware/auth');
@@ -10,6 +10,7 @@ const { requireModuleAction } = require('../middleware/permissions');
 router.use(protect, departmentScope);
 
 router.get('/', requireModuleAction('tasks', 'view'), getTasks);
+router.get('/meta', requireModuleAction('tasks', 'view'), getTaskMeta);
 router.post('/', requireModuleAction('tasks', 'create'), createTask);
 router.get('/:id', requireModuleAction('tasks', 'view'), getTask);
 router.put('/:id/reassign', requireModuleAction('tasks', 'view'), reassignTask);
