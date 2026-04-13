@@ -188,8 +188,27 @@ exports.updateHealthScore = async (req, res) => {
 // @DELETE /api/clients/:id
 exports.deleteClient = async (req, res) => {
   try {
-    await Client.findByIdAndUpdate(req.params.id, { status: 'churned' });
-    res.json({ success: true, message: 'Client marked as churned' });
+    const [projectCount, invoiceCount] = await Promise.all([
+      Project.countDocuments({ clientId: req.params.id }),
+      Invoice.countDocuments({ clientId: req.params.id })
+    ]);
+
+    if (projectCount > 0 || invoiceCount > 0) {
+      const parts = [];
+      if (projectCount > 0) parts.push(`${projectCount} project${projectCount === 1 ? '' : 's'}`);
+      if (invoiceCount > 0) parts.push(`${invoiceCount} invoice${invoiceCount === 1 ? '' : 's'}`);
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete this client: it still has ${parts.join(' and ')}. Remove or reassign them first.`,
+        projectCount,
+        invoiceCount
+      });
+    }
+
+    const client = await Client.findByIdAndDelete(req.params.id);
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    res.json({ success: true, message: 'Client deleted permanently' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

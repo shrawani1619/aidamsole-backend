@@ -243,10 +243,18 @@ exports.updateMilestone = async (req, res) => {
 // @DELETE /api/projects/:id
 exports.deleteProject = async (req, res) => {
   try {
-    const project = await Project.findByIdAndUpdate(req.params.id, { status: 'cancelled' }, { new: true }).lean();
+    const activeTaskCount = await Task.countDocuments({ projectId: req.params.id, deletedAt: null });
+    if (activeTaskCount > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot delete this project: it still has ${activeTaskCount} active task${activeTaskCount === 1 ? '' : 's'}. Delete or move tasks first.`,
+        activeTaskCount
+      });
+    }
+
+    const project = await Project.findByIdAndDelete(req.params.id).lean();
     if (!project) return res.status(404).json({ success: false, message: 'Project not found' });
-    redactProjectFinancialsInPlace(project, req.user);
-    res.json({ success: true, message: 'Project cancelled', project });
+    res.json({ success: true, message: 'Project deleted permanently' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

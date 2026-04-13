@@ -51,7 +51,10 @@ exports.getMessages = async (req, res) => {
     const limit = 50;
     const skip = (page - 1) * limit;
 
-    const messages = await Message.find({ conversationId: req.params.id, isDeleted: false })
+    const messages = await Message.find({
+      conversationId: req.params.id,
+      deletedFor: { $ne: req.user._id }
+    })
       .populate('senderId', 'name email avatar')
       .sort({ createdAt: -1 })
       .skip(skip).limit(limit)
@@ -99,15 +102,38 @@ exports.sendMessage = async (req, res) => {
 // @DELETE /api/chat/messages/:id
 exports.deleteMessage = async (req, res) => {
   try {
+    const mode = req.body?.mode === 'everyone' ? 'everyone' : 'me';
     const message = await Message.findById(req.params.id);
     if (!message) return res.status(404).json({ success: false, message: 'Message not found' });
-    if (String(message.senderId) !== String(req.user._id) && !['super_admin', 'admin'].includes(req.user.role)) {
-      return res.status(403).json({ success: false, message: 'Not authorized' });
+
+    const isSender = String(message.senderId) === String(req.user._id);
+    const isAdmin = ['super_admin', 'admin'].includes(req.user.role);
+
+    if (mode === 'everyone') {
+      if (!isSender && !isAdmin) {
+        return res.status(403).json({ success: false, message: 'Not authorized' });
+      }
+      message.isDeleted = true;
+      message.type = 'system';
+      message.text = 'This message was deleted';
+      message.fileUrl = '';
+      message.fileName = '';
+      await message.save();
+      req.app.get('io')?.to(String(message.conversationId)).emit('chat:message:update', {
+        conversationId: String(message.conversationId),
+        messageId: String(message._id),
+        mode: 'everyone'
+      });
+      return res.json({ success: true, message: 'Message deleted for everyone' });
     }
-    message.isDeleted = true;
-    message.text = 'This message was deleted';
+
+    message.deletedFor = message.deletedFor || [];
+    const alreadyDeletedForMe = message.deletedFor.some((id) => String(id) === String(req.user._id));
+    if (!alreadyDeletedForMe) {
+      message.deletedFor.push(req.user._id);
+    }
     await message.save();
-    res.json({ success: true, message: 'Message deleted' });
+    res.json({ success: true, message: 'Message deleted for you' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

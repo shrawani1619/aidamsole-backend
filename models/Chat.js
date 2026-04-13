@@ -22,7 +22,8 @@ const messageSchema = new mongoose.Schema({
   fileUrl: { type: String, default: '' },
   fileName: { type: String, default: '' },
   readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  isDeleted: { type: Boolean, default: false }
+  isDeleted: { type: Boolean, default: false },
+  deletedFor: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 
 messageSchema.index({ conversationId: 1, createdAt: -1 });
