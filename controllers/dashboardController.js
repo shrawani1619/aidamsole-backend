@@ -5,6 +5,7 @@ const Invoice = require('../models/Invoice');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { departmentIdsFromUser } = require('../utils/departmentScope');
+const { isClientAdmin } = require('../utils/clientScope');
 
 // @GET /api/dashboard
 exports.getDashboard = async (req, res) => {
@@ -14,31 +15,27 @@ exports.getDashboard = async (req, res) => {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    // Base filters by role
+    // Base filters by role — non-admins only see their own clients (assigned AM) and related projects/tasks
     const clientFilter = {};
     const projectFilter = {};
     const taskFilter = { deletedAt: null };
+    let myClientIds = [];
 
     if (!isAdmin) {
-      const deptIds = departmentIdsFromUser(user);
-      if (deptIds.length) {
-        if (deptIds.length === 1) {
-          clientFilter.assignedDepartments = deptIds[0];
-          projectFilter.departmentId = deptIds[0];
-          taskFilter.departmentId = deptIds[0];
-        } else {
-          clientFilter.assignedDepartments = { $in: deptIds };
-          projectFilter.departmentId = { $in: deptIds };
-          taskFilter.departmentId = { $in: deptIds };
-        }
-        if (user.role === 'employee') {
-          taskFilter.$or = [
-            { assigneeId: user._id },
-            { reviewerId: user._id },
-            { reviewerIds: user._id }
-          ];
-        }
-      }
+      myClientIds = await Client.find({ assignedAM: user._id }).distinct('_id');
+      clientFilter.assignedAM = user._id;
+      projectFilter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
+      taskFilter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
+    }
+
+    const myTasksQuery = {
+      assigneeId: user._id,
+      status: { $nin: ['done', 'approved'] },
+      deletedAt: null,
+    };
+    if (!isAdmin) {
+      if (myClientIds.length) myTasksQuery.clientId = { $in: myClientIds };
+      else myTasksQuery._id = { $in: [] };
     }
 
     const [
@@ -60,8 +57,7 @@ exports.getDashboard = async (req, res) => {
         { $match: { ...taskFilter, createdAt: { $gte: monthStart } } },
         { $group: { _id: '$status', count: { $sum: 1 } } }
       ]),
-      // My open tasks
-      Task.find({ assigneeId: user._id, status: { $nin: ['done', 'approved'] }, deletedAt: null })
+      Task.find(myTasksQuery)
         .populate('projectId', 'title')
         .populate('clientId', 'name company logo')
         .sort({ dueDate: 1, priority: -1 })
@@ -133,13 +129,8 @@ exports.getDashboard = async (req, res) => {
 exports.getHealthScores = async (req, res) => {
   try {
     const filter = { status: { $in: ['active', 'at_risk'] } };
-    if (!req.scopeAll) {
-      if (req.scopeDepartments?.length) {
-        filter.assignedDepartments =
-          req.scopeDepartments.length === 1
-            ? req.scopeDepartments[0]
-            : { $in: req.scopeDepartments };
-      } else if (req.scopeUser) filter.assignedAM = req.scopeUser;
+    if (!isClientAdmin(req.user)) {
+      filter.assignedAM = req.user._id;
     }
 
     const clients = await Client.find(filter)

@@ -3,10 +3,20 @@ const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Department = require('../models/Department');
 const Project = require('../models/Project');
+const Client = require('../models/Client');
 const { logActivity } = require('../utils/logActivity');
+const { isClientAdmin, clientIdsForAssignedAm } = require('../utils/clientScope');
 const { userBelongsToAnyDepartmentClause } = require('../utils/departmentScope');
 
 const toOid = (v) => (v && String(v).trim() ? v : null);
+
+/** Non-admins may only access tasks belonging to clients where they are assigned AM */
+async function userOwnsClientForTask(req, clientId) {
+  if (!clientId) return false;
+  if (isClientAdmin(req.user)) return true;
+  const c = await Client.findById(clientId).select('assignedAM').lean();
+  return !!(c && String(c.assignedAM) === String(req.user._id));
+}
 
 /** Unique non-null ObjectIds from mixed inputs (string, populated doc, etc.) */
 function uniqReviewerOids(values) {
@@ -108,21 +118,17 @@ exports.getTasks = async (req, res) => {
     if (req.query.delayed === 'true') filter.isDelayed = true;
     if (req.query.search) filter.title = { $regex: req.query.search, $options: 'i' };
 
-    // RBAC
-    if (!req.scopeAll) {
-      if (req.scopeDepartments?.length) {
-        filter.departmentId =
-          req.scopeDepartments.length === 1
-            ? req.scopeDepartments[0]
-            : { $in: req.scopeDepartments };
-      }
-      if (req.scopeUser) {
-        filter.$or = [
-          { assigneeId: req.scopeUser },
-          { reviewerId: req.scopeUser },
-          { reviewerIds: req.scopeUser },
-          { createdBy: req.scopeUser }
-        ];
+    // Non-admins only see tasks for clients where they are the assigned account manager
+    if (!isClientAdmin(req.user)) {
+      const myClientIds = await clientIdsForAssignedAm(req.user._id);
+      const allowed = new Set(myClientIds.map(String));
+      if (req.query.client) {
+        if (!allowed.has(String(req.query.client))) filter._id = { $in: [] };
+      } else if (req.query.project) {
+        const proj = await Project.findById(req.query.project).select('clientId').lean();
+        if (!proj || !allowed.has(String(proj.clientId))) filter._id = { $in: [] };
+      } else {
+        filter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
       }
     }
 
@@ -167,10 +173,16 @@ exports.getTaskMeta = async (req, res) => {
           : { $in: req.scopeDepartments };
     }
 
+    let projectQuery = {};
+    if (!isClientAdmin(req.user)) {
+      const myClientIds = await clientIdsForAssignedAm(req.user._id);
+      projectQuery = myClientIds.length ? { clientId: { $in: myClientIds } } : { _id: { $in: [] } };
+    }
+
     const [users, departments, projects] = await Promise.all([
       User.find(usersFilter).select('name email avatar role departmentId departmentMemberships').sort('name').lean(),
       Department.find(departmentsFilter).select('name slug color').sort('name').lean(),
-      Project.find({})
+      Project.find(projectQuery)
         .select('title clientId departmentId status')
         .populate('clientId', 'company name')
         .populate('departmentId', 'name slug color')
@@ -201,6 +213,9 @@ exports.createTask = async (req, res) => {
         { projectId: body.projectId, clientId: body.clientId, departmentId: body.departmentId },
         body.subtasks
       );
+    }
+    if (!(await userOwnsClientForTask(req, body.clientId))) {
+      return res.status(403).json({ success: false, message: 'You can only create tasks for your own clients' });
     }
     const task = await Task.create(body);
     const populated = await Task.findById(task._id)
@@ -269,6 +284,9 @@ exports.getTask = async (req, res) => {
       .populate('timeLogs.userId', 'name email avatar')
       .populate('comments.userId', 'name email avatar');
     if (!task || task.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!(await userOwnsClientForTask(req, task.clientId))) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
     res.json({ success: true, task });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -280,8 +298,16 @@ exports.updateTask = async (req, res) => {
   try {
     const prevTask = await Task.findById(req.params.id);
     if (!prevTask || prevTask.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!(await userOwnsClientForTask(req, prevTask.clientId))) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
 
     const body = { ...req.body };
+    if (body.clientId != null && String(body.clientId) !== String(prevTask.clientId)) {
+      if (!(await userOwnsClientForTask(req, body.clientId))) {
+        return res.status(403).json({ success: false, message: 'You cannot move this task to that client' });
+      }
+    }
     const rr = resolveMainReviewers(body, prevTask, false);
     body.reviewerIds = rr.reviewerIds;
     body.reviewerId = rr.reviewerId;
@@ -338,6 +364,9 @@ exports.twoEyeApprove = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
     if (!task || task.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!(await userOwnsClientForTask(req, task.clientId))) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
     if (String(task.assigneeId) === String(req.user._id)) {
       return res.status(400).json({ success: false, message: 'Assignee cannot approve their own task' });
     }
@@ -366,6 +395,9 @@ exports.reassignTask = async (req, res) => {
   try {
     const prev = await Task.findById(req.params.id);
     if (!prev || prev.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!(await userOwnsClientForTask(req, prev.clientId))) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
     if (!isUserTaskReviewer(prev, req.user._id)) {
       return res.status(403).json({ success: false, message: 'Only a task reviewer can reassign' });
     }
@@ -417,6 +449,9 @@ exports.addComment = async (req, res) => {
   try {
     const exists = await Task.findOne({ _id: req.params.id, deletedAt: null });
     if (!exists) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!(await userOwnsClientForTask(req, exists.clientId))) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
     const task = await Task.findByIdAndUpdate(
       req.params.id,
       { $push: { comments: { userId: req.user._id, text: req.body.text } } },
@@ -434,6 +469,9 @@ exports.logTime = async (req, res) => {
   try {
     const pre = await Task.findOne({ _id: req.params.id, deletedAt: null });
     if (!pre) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!(await userOwnsClientForTask(req, pre.clientId))) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
     const { startTime, endTime, note } = req.body;
     const duration = Math.round((new Date(endTime) - new Date(startTime)) / 60000);
     const task = await Task.findByIdAndUpdate(
@@ -456,6 +494,9 @@ exports.updateSubtask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
     if (!task || task.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!(await userOwnsClientForTask(req, task.clientId))) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
     const sub = task.subtasks.id(req.params.subtaskId);
     if (!sub) return res.status(404).json({ success: false, message: 'Subtask not found' });
 
@@ -514,6 +555,9 @@ exports.deleteTask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
     if (!task) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!(await userOwnsClientForTask(req, task.clientId))) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
     if (task.deletedAt) return res.status(400).json({ success: false, message: 'Task is already in trash' });
     task.deletedAt = new Date();
     task.deletedBy = req.user._id;

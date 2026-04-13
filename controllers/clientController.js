@@ -4,6 +4,7 @@ const Project = require('../models/Project');
 const Invoice = require('../models/Invoice');
 const Notification = require('../models/Notification');
 const { v4: uuidv4 } = require('uuid');
+const { isClientAdmin, clientAssignedAmEquals } = require('../utils/clientScope');
 
 // @GET /api/clients
 exports.getClients = async (req, res) => {
@@ -19,16 +20,9 @@ exports.getClients = async (req, res) => {
       ];
     }
 
-    // RBAC scope
-    if (!req.scopeAll) {
-      if (req.scopeDepartments?.length) {
-        filter.assignedDepartments =
-          req.scopeDepartments.length === 1
-            ? req.scopeDepartments[0]
-            : { $in: req.scopeDepartments };
-      } else if (req.scopeUser) {
-        filter.assignedAM = req.scopeUser;
-      }
+    // Non-admins only see clients where they are the assigned account manager
+    if (!isClientAdmin(req.user)) {
+      filter.assignedAM = req.user._id;
     }
 
     const page = parseInt(req.query.page) || 1;
@@ -63,6 +57,10 @@ exports.createClient = async (req, res) => {
     }
     data.referralCode = uuidv4().slice(0, 8).toUpperCase();
 
+    if (!isClientAdmin(req.user)) {
+      data.assignedAM = req.user._id;
+    }
+
     const client = await Client.create(data);
     const populated = await Client.findById(client._id)
       .populate('assignedAM', 'name email avatar')
@@ -94,6 +92,9 @@ exports.getClient = async (req, res) => {
       .populate('assignedDepartments', 'name slug color icon')
       .populate('referredBy', 'name company');
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    if (!isClientAdmin(req.user) && !clientAssignedAmEquals(req.user._id, client)) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
 
     // Fetch related stats
     const [projectCount, invoiceStats] = await Promise.all([
@@ -121,11 +122,20 @@ exports.getClient = async (req, res) => {
 // @PUT /api/clients/:id
 exports.updateClient = async (req, res) => {
   try {
+    const existing = await Client.findById(req.params.id).lean();
+    if (!existing) return res.status(404).json({ success: false, message: 'Client not found' });
+    if (!isClientAdmin(req.user) && String(existing.assignedAM) !== String(req.user._id)) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
     const payload = { ...req.body };
     if ('phone' in payload) {
       const p = parsePhone(payload.phone);
       if (!p.ok) return res.status(400).json({ success: false, message: p.message });
       payload.phone = p.value;
+    }
+    if (!isClientAdmin(req.user)) {
+      delete payload.assignedAM;
     }
     const client = await Client.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true })
       .populate('assignedAM', 'name email avatar')
@@ -142,6 +152,12 @@ exports.updateHealthScore = async (req, res) => {
   try {
     const { engagement, results, payment, sentiment } = req.body;
     const overall = ((engagement + results + payment + sentiment) / 4).toFixed(1);
+
+    const existing = await Client.findById(req.params.id).lean();
+    if (!existing) return res.status(404).json({ success: false, message: 'Client not found' });
+    if (!isClientAdmin(req.user) && String(existing.assignedAM) !== String(req.user._id)) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
 
     const client = await Client.findByIdAndUpdate(
       req.params.id,
@@ -188,6 +204,12 @@ exports.updateHealthScore = async (req, res) => {
 // @DELETE /api/clients/:id
 exports.deleteClient = async (req, res) => {
   try {
+    const existing = await Client.findById(req.params.id).lean();
+    if (!existing) return res.status(404).json({ success: false, message: 'Client not found' });
+    if (!isClientAdmin(req.user) && String(existing.assignedAM) !== String(req.user._id)) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
     const [projectCount, invoiceCount] = await Promise.all([
       Project.countDocuments({ clientId: req.params.id }),
       Invoice.countDocuments({ clientId: req.params.id })
@@ -217,6 +239,12 @@ exports.deleteClient = async (req, res) => {
 // @GET /api/clients/:id/timeline
 exports.getClientTimeline = async (req, res) => {
   try {
+    const clientRow = await Client.findById(req.params.id).select('assignedAM').lean();
+    if (!clientRow) return res.status(404).json({ success: false, message: 'Client not found' });
+    if (!isClientAdmin(req.user) && String(clientRow.assignedAM) !== String(req.user._id)) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
     const [projects, invoices] = await Promise.all([
       Project.find({ clientId: req.params.id }).sort({ createdAt: -1 }).limit(10).lean(),
       Invoice.find({ clientId: req.params.id }).sort({ createdAt: -1 }).limit(10).lean()
