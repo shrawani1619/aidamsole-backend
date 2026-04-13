@@ -27,7 +27,8 @@ const seed = async () => {
   // ── DEPARTMENTS ─────────────────────────────────────────────────────────────
   const deptData = [
     { name: 'SEO', slug: 'seo', color: '#10B981', icon: 'search' },
-    { name: 'Paid Ads', slug: 'paid_ads', color: '#3B82F6', icon: 'trending-up' },
+    { name: 'Meta Ads', slug: 'meta_ads', color: '#1877F2', icon: 'trending-up' },
+    { name: 'Google Ads', slug: 'google_ads', color: '#4285F4', icon: 'bar-chart' },
     { name: 'Social Media', slug: 'social_media', color: '#8B5CF6', icon: 'instagram' },
     { name: 'Web Dev', slug: 'web_dev', color: '#F59E0B', icon: 'code' },
     { name: 'Sales', slug: 'sales', color: '#EF4444', icon: 'dollar-sign' },
@@ -53,7 +54,7 @@ const seed = async () => {
     },
     {
       name: 'Vikram Singh', email: 'ads.manager@aidamsole.com', password: hashedPwd,
-      role: 'department_manager', departmentId: deptMap['paid_ads'], departmentRole: 'Paid Ads Manager'
+      role: 'department_manager', departmentId: deptMap['meta_ads'], departmentRole: 'Meta Ads Manager'
     },
     {
       name: 'Anjali Mehta', email: 'social.manager@aidamsole.com', password: hashedPwd,
@@ -69,7 +70,7 @@ const seed = async () => {
     },
     {
       name: 'Arjun Nair', email: 'am2@aidamsole.com', password: hashedPwd,
-      role: 'employee', departmentId: deptMap['paid_ads'], departmentRole: 'Ads Strategist'
+      role: 'employee', departmentId: deptMap['meta_ads'], departmentRole: 'Ads Strategist'
     },
     {
       name: 'Kavya Reddy', email: 'content@aidamsole.com', password: hashedPwd,
@@ -101,10 +102,15 @@ const seed = async () => {
     headId: seoManager._id,
     members: [seoManager._id, am1._id, users[8]._id]
   });
-  await Department.findByIdAndUpdate(deptMap['paid_ads'], {
+  await Department.findByIdAndUpdate(deptMap['meta_ads'], {
     headIds: [adsManager._id],
     headId: adsManager._id,
     members: [adsManager._id, am2._id]
+  });
+  await Department.findByIdAndUpdate(deptMap['google_ads'], {
+    headIds: [adsManager._id],
+    headId: adsManager._id,
+    members: [adsManager._id]
   });
   await Department.findByIdAndUpdate(deptMap['social_media'], {
     headIds: [socialManager._id],
@@ -127,8 +133,8 @@ const seed = async () => {
     {
       name: 'Rajesh Khurana', company: 'TechVista India', email: 'rajesh@techvista.in',
       phone: 9876543210, website: 'https://techvista.in', industry: 'Technology',
-      assignedAM: am1._id, assignedDepartments: [deptMap['seo'], deptMap['paid_ads']],
-      services: ['SEO', 'Paid Ads'], status: 'active', contractValue: 45000,
+      assignedAM: am1._id, assignedDepartments: [deptMap['seo'], deptMap['meta_ads']],
+      services: ['SEO', 'Meta Ads'], status: 'active', contractValue: 45000,
       healthScore: { overall: 9, engagement: 9, results: 9, payment: 10, sentiment: 8 },
       contractStart: new Date('2024-01-01'), contractEnd: new Date('2024-12-31'),
       renewalDate: new Date('2024-12-01'), onboardingCompleted: true
@@ -136,8 +142,8 @@ const seed = async () => {
     {
       name: 'Sunita Sharma', company: 'Fashion Forward', email: 'sunita@fashionforward.com',
       phone: 9876543211, website: 'https://fashionforward.com', industry: 'Fashion',
-      assignedAM: am2._id, assignedDepartments: [deptMap['social_media'], deptMap['paid_ads']],
-      services: ['Social Media', 'Paid Ads'], status: 'active', contractValue: 35000,
+      assignedAM: am2._id, assignedDepartments: [deptMap['social_media'], deptMap['meta_ads']],
+      services: ['Social Media', 'Meta Ads'], status: 'active', contractValue: 35000,
       healthScore: { overall: 7, engagement: 7, results: 6, payment: 9, sentiment: 6 },
       contractStart: new Date('2024-02-01'), contractEnd: new Date('2024-12-31'),
       renewalDate: new Date('2024-12-15'), onboardingCompleted: true
@@ -153,8 +159,8 @@ const seed = async () => {
     {
       name: 'Pooja Verma', company: 'Real Estate Kings', email: 'pooja@rekings.in',
       phone: 9876543213, industry: 'Real Estate',
-      assignedAM: am2._id, assignedDepartments: [deptMap['paid_ads'], deptMap['web_dev']],
-      services: ['Paid Ads', 'Web Dev'], status: 'active', contractValue: 65000,
+      assignedAM: am2._id, assignedDepartments: [deptMap['google_ads'], deptMap['web_dev']],
+      services: ['Google Ads', 'Web Dev'], status: 'active', contractValue: 65000,
       healthScore: { overall: 8, engagement: 8, results: 8, payment: 9, sentiment: 7 },
       contractStart: new Date('2024-01-15'), renewalDate: new Date('2025-01-15'),
       onboardingCompleted: true
@@ -189,9 +195,9 @@ const seed = async () => {
     },
     {
       title: 'Fashion Forward Meta Ads', clientId: clients[1]._id,
-      departmentId: deptMap['paid_ads'], managerId: adsManager._id,
+      departmentId: deptMap['meta_ads'], managerId: adsManager._id,
       team: [adsManager._id, am2._id],
-      service: ['Paid Ads'], status: 'active', priority: 'high',
+      service: ['Meta Ads'], status: 'active', priority: 'high',
       startDate: new Date('2024-09-01'), dueDate: new Date('2024-12-31'),
       budget: 120000, spent: 78000, progress: 55,
       kpis: [
@@ -204,7 +210,7 @@ const seed = async () => {
       title: 'Real Estate Kings PPC + Web Revamp', clientId: clients[3]._id,
       departmentId: deptMap['web_dev'], managerId: users[4]._id,
       team: [users[4]._id, am2._id],
-      service: ['Web Dev', 'Paid Ads'], status: 'active', priority: 'critical',
+      service: ['Web Dev', 'Google Ads'], status: 'active', priority: 'critical',
       startDate: new Date('2024-10-15'), dueDate: new Date('2024-12-15'),
       budget: 85000, spent: 42000, progress: 40
     },
@@ -260,7 +266,7 @@ const seed = async () => {
     {
       title: 'Fashion Forward: Create 5 new ad creatives',
       projectId: projects[1]._id, clientId: clients[1]._id,
-      departmentId: deptMap['paid_ads'], assigneeId: am2._id,
+      departmentId: deptMap['meta_ads'], assigneeId: am2._id,
       reviewerId: adsManager._id, reviewerIds: [adsManager._id], createdBy: adsManager._id,
       status: 'in_progress', priority: 'critical',
       dueDate: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000), // overdue
@@ -269,7 +275,7 @@ const seed = async () => {
     {
       title: 'Weekly Meta Ads optimization — Week 42',
       projectId: projects[1]._id, clientId: clients[1]._id,
-      departmentId: deptMap['paid_ads'], assigneeId: adsManager._id,
+      departmentId: deptMap['meta_ads'], assigneeId: adsManager._id,
       createdBy: adsManager._id,
       status: 'done', priority: 'high',
       dueDate: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000),
@@ -315,8 +321,8 @@ const seed = async () => {
       invoiceNumber: 'ADS-2024-0002', clientId: clients[1]._id, createdBy: superAdmin._id,
       projectId: projects[1]._id, status: 'paid',
       lineItems: [
-        { description: 'Meta Ads Management — October 2024', service: 'Paid Ads', quantity: 1, unitPrice: 35000, total: 35000 },
-        { description: 'Ad Spend Management Fee', service: 'Paid Ads', quantity: 1, unitPrice: 8000, total: 8000 }
+        { description: 'Meta Ads Management — October 2024', service: 'Meta Ads', quantity: 1, unitPrice: 35000, total: 35000 },
+        { description: 'Ad Spend Management Fee', service: 'Meta Ads', quantity: 1, unitPrice: 8000, total: 8000 }
       ],
       subtotal: 43000, taxRate: 18, taxAmount: 7740, total: 50740,
       issueDate: new Date('2024-10-01'), dueDate: new Date('2024-10-15'),
@@ -326,7 +332,7 @@ const seed = async () => {
       invoiceNumber: 'ADS-2024-0003', clientId: clients[3]._id, createdBy: superAdmin._id,
       status: 'sent',
       lineItems: [
-        { description: 'PPC Management — November 2024', service: 'Paid Ads', quantity: 1, unitPrice: 40000, total: 40000 },
+        { description: 'PPC Management — November 2024', service: 'Google Ads', quantity: 1, unitPrice: 40000, total: 40000 },
         { description: 'Web Development — Phase 1', service: 'Web Dev', quantity: 1, unitPrice: 25000, total: 25000 }
       ],
       subtotal: 65000, taxRate: 18, taxAmount: 11700, total: 76700,

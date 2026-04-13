@@ -110,8 +110,9 @@ app.get('/api/health', (req, res) => {
   res.json({ success: true, message: 'AiDamsole API is running', timestamp: new Date() });
 });
 
-// Socket.io chat logic
+// Socket.io chat logic — userId (string) -> latest socket.id (for direct emits e.g. chat notifications)
 const connectedUsers = {};
+app.set('connectedUsers', connectedUsers);
 
 /**
  * Reusable real-time notification broadcaster.
@@ -181,8 +182,9 @@ io.on('connection', (socket) => {
   console.log(`Socket connected: ${socket.id}`);
 
   socket.on('user:join', (userId) => {
-    connectedUsers[userId] = socket.id;
-    socket.userId = userId;
+    const id = String(userId);
+    connectedUsers[id] = socket.id;
+    socket.userId = id;
     io.emit('users:online', Object.keys(connectedUsers));
   });
 

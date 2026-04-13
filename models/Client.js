@@ -29,7 +29,7 @@ const clientSchema = new mongoose.Schema({
   assignedDepartments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Department' }],
   services: [{
     type: String,
-    enum: ['SEO', 'Paid Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other']
+    enum: ['SEO', 'Organic Marketing', 'Meta Ads', 'Google Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other']
   }],
   status: {
     type: String,

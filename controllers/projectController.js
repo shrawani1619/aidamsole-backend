@@ -5,7 +5,7 @@ const Notification = require('../models/Notification');
 const { isClientAdmin, clientIdsForAssignedAm, userHasClientAccess } = require('../utils/clientScope');
 
 const SERVICE_ENUM = Project.SERVICE_ENUM || [
-  'SEO', 'Paid Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other',
+  'SEO', 'Organic Marketing', 'Meta Ads', 'Google Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other',
 ];
 
 /** Accept legacy string or array; return deduped valid enum values (min length 0). */
@@ -54,6 +54,7 @@ exports.getProjects = async (req, res) => {
   try {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
+    if (req.query.priority) filter.priority = req.query.priority;
     if (req.query.client) filter.clientId = req.query.client;
     if (req.query.department) filter.departmentId = req.query.department;
     if (req.query.service) filter.service = req.query.service;
@@ -74,11 +75,15 @@ exports.getProjects = async (req, res) => {
       }
     }
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const rawLimit = parseInt(req.query.limit, 10);
+    const limit = Math.min(500, Math.max(1, Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 100));
     const skip = (page - 1) * limit;
 
-    const [projects, total] = await Promise.all([
+    const filterForStatusBreakdown = { ...filter };
+    delete filterForStatusBreakdown.status;
+
+    const [projects, total, breakdownRows] = await Promise.all([
       Project.find(filter)
         .populate('clientId', 'name company logo status')
         .populate('departmentId', 'name slug color')
@@ -86,7 +91,11 @@ exports.getProjects = async (req, res) => {
         .populate('team', 'name email avatar')
         .sort({ createdAt: -1 })
         .skip(skip).limit(limit).lean(),
-      Project.countDocuments(filter)
+      Project.countDocuments(filter),
+      Project.aggregate([
+        { $match: filterForStatusBreakdown },
+        { $group: { _id: '$status', count: { $sum: 1 } } }
+      ])
     ]);
 
     projects.forEach((p) => {
@@ -94,7 +103,20 @@ exports.getProjects = async (req, res) => {
       redactProjectFinancialsInPlace(p, req.user);
     });
 
-    res.json({ success: true, count: projects.length, total, page, pages: Math.ceil(total / limit), projects });
+    const statusCounts = {};
+    breakdownRows.forEach((row) => {
+      if (row._id != null) statusCounts[row._id] = row.count;
+    });
+
+    res.json({
+      success: true,
+      count: projects.length,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      projects,
+      statusCounts
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

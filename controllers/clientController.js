@@ -6,6 +6,30 @@ const Notification = require('../models/Notification');
 const { v4: uuidv4 } = require('uuid');
 const { isClientAdmin, userHasClientAccess } = require('../utils/clientScope');
 
+/** Same as list filter but without status — used for full status breakdown (not page-limited). */
+function clientFilterForStatusBreakdown(req) {
+  const and = [];
+  if (req.query.service) and.push({ services: req.query.service });
+  if (req.query.search) {
+    and.push({
+      $or: [
+        { name: { $regex: req.query.search, $options: 'i' } },
+        { company: { $regex: req.query.search, $options: 'i' } },
+        { email: { $regex: req.query.search, $options: 'i' } }
+      ]
+    });
+  }
+  if (!isClientAdmin(req.user)) {
+    and.push({
+      $or: [
+        { assignedAM: req.user._id },
+        { projectManager: req.user._id }
+      ]
+    });
+  }
+  return and.length ? { $and: and } : {};
+}
+
 // @GET /api/clients
 exports.getClients = async (req, res) => {
   try {
@@ -31,8 +55,9 @@ exports.getClients = async (req, res) => {
     }
     const filter = and.length ? { $and: and } : {};
 
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const rawLimit = parseInt(req.query.limit, 10);
+    const limit = Math.min(500, Math.max(1, Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : 100));
     const skip = (page - 1) * limit;
 
     let listQuery = Client.find(filter)
@@ -47,12 +72,31 @@ exports.getClients = async (req, res) => {
       listQuery = listQuery.select('-contractValue');
     }
 
-    const [clients, total] = await Promise.all([
+    const matchBreakdown = clientFilterForStatusBreakdown(req);
+
+    const [clients, total, breakdownRows] = await Promise.all([
       listQuery.lean(),
-      Client.countDocuments(filter)
+      Client.countDocuments(filter),
+      Client.aggregate([
+        { $match: matchBreakdown },
+        { $group: { _id: '$status', count: { $sum: 1 } } }
+      ])
     ]);
 
-    res.json({ success: true, count: clients.length, total, page, pages: Math.ceil(total / limit), clients });
+    const statusCounts = {};
+    breakdownRows.forEach((row) => {
+      if (row._id != null) statusCounts[row._id] = row.count;
+    });
+
+    res.json({
+      success: true,
+      count: clients.length,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      clients,
+      statusCounts
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

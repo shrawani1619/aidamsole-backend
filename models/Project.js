@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const SERVICE_ENUM = ['SEO', 'Paid Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other'];
+const SERVICE_ENUM = ['SEO', 'Organic Marketing', 'Meta Ads', 'Google Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other'];
 
 const projectSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true },
