@@ -97,22 +97,27 @@ const seed = async () => {
 
   // Update dept heads and members
   await Department.findByIdAndUpdate(deptMap['seo'], {
+    headIds: [seoManager._id],
     headId: seoManager._id,
     members: [seoManager._id, am1._id, users[8]._id]
   });
   await Department.findByIdAndUpdate(deptMap['paid_ads'], {
+    headIds: [adsManager._id],
     headId: adsManager._id,
     members: [adsManager._id, am2._id]
   });
   await Department.findByIdAndUpdate(deptMap['social_media'], {
+    headIds: [socialManager._id],
     headId: socialManager._id,
     members: [socialManager._id, users[7]._id]
   });
   await Department.findByIdAndUpdate(deptMap['web_dev'], {
+    headIds: [users[4]._id],
     headId: users[4]._id,
     members: [users[4]._id]
   });
   await Department.findByIdAndUpdate(deptMap['accounts'], {
+    headIds: [users[9]._id],
     headId: users[9]._id,
     members: [users[9]._id]
   });
@@ -223,7 +228,7 @@ const seed = async () => {
       title: 'Complete Q4 keyword research & clustering',
       projectId: projects[0]._id, clientId: clients[0]._id,
       departmentId: deptMap['seo'], assigneeId: users[8]._id,
-      reviewerId: seoManager._id, createdBy: seoManager._id,
+      reviewerId: seoManager._id, reviewerIds: [seoManager._id], createdBy: seoManager._id,
       status: 'in_progress', priority: 'high',
       dueDate: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000),
       estimatedHours: 8, actualHours: 5,
@@ -238,7 +243,7 @@ const seed = async () => {
       title: 'Write 4 optimized blog posts (October)',
       projectId: projects[0]._id, clientId: clients[0]._id,
       departmentId: deptMap['seo'], assigneeId: am1._id,
-      createdBy: seoManager._id, reviewerId: seoManager._id,
+      createdBy: seoManager._id, reviewerId: seoManager._id, reviewerIds: [seoManager._id],
       status: 'review', priority: 'high',
       dueDate: new Date(now.getTime() + 1 * 24 * 60 * 60 * 1000),
       estimatedHours: 12, actualHours: 10
@@ -256,7 +261,7 @@ const seed = async () => {
       title: 'Fashion Forward: Create 5 new ad creatives',
       projectId: projects[1]._id, clientId: clients[1]._id,
       departmentId: deptMap['paid_ads'], assigneeId: am2._id,
-      reviewerId: adsManager._id, createdBy: adsManager._id,
+      reviewerId: adsManager._id, reviewerIds: [adsManager._id], createdBy: adsManager._id,
       status: 'in_progress', priority: 'critical',
       dueDate: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000), // overdue
       isDelayed: true, estimatedHours: 6, actualHours: 8
@@ -284,7 +289,7 @@ const seed = async () => {
       title: 'GreenEarth: Technical SEO audit report',
       projectId: projects[3]._id, clientId: clients[2]._id,
       departmentId: deptMap['seo'], assigneeId: users[8]._id,
-      reviewerId: seoManager._id, createdBy: seoManager._id,
+      reviewerId: seoManager._id, reviewerIds: [seoManager._id], createdBy: seoManager._id,
       status: 'blocked', priority: 'medium',
       dueDate: new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000),
       isDelayed: true, estimatedHours: 10, actualHours: 3

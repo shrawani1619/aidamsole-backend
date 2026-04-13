@@ -22,6 +22,9 @@ const MODULE_LABELS = {
   reports: 'Reports',
   finance: 'Finance',
   chat: 'Chat',
+  trash: 'Trash',
+  history: 'Activity history',
+  admins: 'Administrators',
 };
 
 const ACTION_LABELS = {
@@ -75,7 +78,8 @@ exports.getPermissionSchema = (_req, res) => {
         },
         description:
           'Each user may have modulePermissions overrides merged with role defaults. ' +
-          'Super admin and admin always receive full access when resolved.',
+          'Super admin receives full access to all modules. Admin uses full access except Activity history (off by default; grant per user). ' +
+          'Other roles use role baselines plus overrides.',
       },
     });
   } catch (err) {
@@ -142,8 +146,11 @@ exports.updateUserPermissions = async (req, res) => {
   try {
     const target = await User.findById(req.params.userId);
     if (!target) return res.status(404).json({ success: false, message: 'User not found' });
-    if (target.role === 'super_admin' && req.user.role !== 'super_admin') {
-      return res.status(403).json({ success: false, message: 'Cannot change super admin permissions' });
+    if (target.role === 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Super admin permissions are fixed (full access) and cannot be edited',
+      });
     }
 
     const sanitized = sanitizeModulePermissions(req.body.modulePermissions || {});

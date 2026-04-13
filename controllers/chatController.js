@@ -1,5 +1,6 @@
 const { Conversation, Message } = require('../models/Chat');
 const User = require('../models/User');
+const { userBelongsToAnyDepartmentClause } = require('../utils/departmentScope');
 
 // @GET /api/chat/conversations
 exports.getConversations = async (req, res) => {
@@ -115,9 +116,15 @@ exports.deleteMessage = async (req, res) => {
 // @GET /api/chat/users
 exports.getChatUsers = async (req, res) => {
   try {
-    const filter = { isActive: true, _id: { $ne: req.user._id } };
-    if (req.scopeDepartment) filter.departmentId = req.scopeDepartment;
-    const users = await User.find(filter).select('name email avatar role departmentId departmentRole').populate('departmentId', 'name color').lean();
+    const filter = { isActive: true, deletedAt: null, _id: { $ne: req.user._id } };
+    if (req.scopeDepartments?.length) {
+      Object.assign(filter, userBelongsToAnyDepartmentClause(req.scopeDepartments));
+    }
+    const users = await User.find(filter)
+      .select('name email avatar role departmentId departmentRole departmentMemberships')
+      .populate('departmentId', 'name color')
+      .populate('departmentMemberships.departmentId', 'name color')
+      .lean();
     res.json({ success: true, users });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

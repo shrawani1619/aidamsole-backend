@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Department = require('../models/Department');
 const User = require('../models/User');
 
@@ -12,9 +13,40 @@ const GLOBAL_ADMIN_ROLES = ['super_admin', 'admin'];
 async function assignUserAsDepartmentHead(userId, departmentId) {
   const u = await User.findById(userId);
   if (!u) return;
-  const update = { departmentId };
-  if (!GLOBAL_ADMIN_ROLES.includes(u.role)) update.role = 'department_manager';
-  await User.findByIdAndUpdate(userId, update);
+  const has = (u.departmentMemberships || []).some((m) => String(m.departmentId) === String(departmentId));
+  if (!has) {
+    u.departmentMemberships = u.departmentMemberships || [];
+    u.departmentMemberships.unshift({ departmentId, role: '' });
+  }
+  if (!GLOBAL_ADMIN_ROLES.includes(u.role)) u.role = 'department_manager';
+  await u.save();
+}
+
+/** Accept `headIds: string[]` or legacy single `headId`. */
+function normalizeHeadIdsFromBody(body) {
+  if (Array.isArray(body.headIds)) {
+    return [...new Set(body.headIds.map((id) => String(id).trim()).filter(Boolean))];
+  }
+  if (body.headId) return [String(body.headId)];
+  return [];
+}
+
+function wantsHeadIdsUpdate(body) {
+  return Object.prototype.hasOwnProperty.call(body, 'headIds') || Object.prototype.hasOwnProperty.call(body, 'headId');
+}
+
+/** After removing this user as head of `excludeDeptId`, demote to employee only if not head of any other department. */
+async function maybeDemoteRemovedHead(userId, excludeDeptId) {
+  const elsewhere = await Department.exists({
+    _id: { $ne: excludeDeptId },
+    $or: [{ headId: userId }, { headIds: userId }],
+  });
+  if (elsewhere) return;
+  const u = await User.findById(userId);
+  if (u && u.role === 'department_manager' && !GLOBAL_ADMIN_ROLES.includes(u.role)) {
+    u.role = 'employee';
+    await u.save();
+  }
 }
 
 // @GET /api/departments
@@ -23,7 +55,8 @@ exports.getDepartments = async (req, res) => {
     // All authenticated users can see departments list
     const departments = await Department.find({ isActive: true })
       .populate('headId', 'name email avatar')
-      .populate('members', 'name email avatar role departmentRole')
+      .populate('headIds', 'name email avatar')
+      .populate('members', 'name email avatar role departmentRole departmentMemberships')
       .sort('name')
       .lean();
     res.json({ success: true, count: departments.length, departments });
@@ -35,25 +68,36 @@ exports.getDepartments = async (req, res) => {
 // @POST /api/departments
 exports.createDepartment = async (req, res) => {
   try {
-    const { name, description, headId, color, icon, kpis, roles } = req.body;
+    const { name, description, color, icon, kpis, roles } = req.body;
     const slug = name.toLowerCase().replace(/\s+/g, '_');
 
     const existing = await Department.findOne({ name });
     if (existing) return res.status(400).json({ success: false, message: 'Department already exists' });
 
+    const headStrs = normalizeHeadIdsFromBody(req.body);
+    const headIds = headStrs.map((id) => new mongoose.Types.ObjectId(id));
+
     const dept = await Department.create({
-      name, slug, description, headId, color, icon, kpis,
-      roles: normalizeDeptRoles(roles)
+      name,
+      slug,
+      description,
+      headIds,
+      color,
+      icon,
+      kpis,
+      roles: normalizeDeptRoles(roles),
     });
 
-    if (headId) {
-      await assignUserAsDepartmentHead(headId, dept._id);
-      dept.members.push(headId);
-      await dept.save();
+    for (const hid of headStrs) {
+      await assignUserAsDepartmentHead(hid, dept._id);
+      const memberIds = dept.members.map(String);
+      if (!memberIds.includes(String(hid))) dept.members.push(hid);
     }
+    await dept.save();
 
     const populated = await Department.findById(dept._id)
       .populate('headId', 'name email avatar')
+      .populate('headIds', 'name email avatar')
       .populate('members', 'name email avatar');
     res.status(201).json({ success: true, department: populated });
   } catch (err) {
@@ -66,7 +110,8 @@ exports.getDepartment = async (req, res) => {
   try {
     const dept = await Department.findById(req.params.id)
       .populate('headId', 'name email avatar phone')
-      .populate('members', 'name email avatar role departmentRole isActive');
+      .populate('headIds', 'name email avatar phone')
+      .populate('members', 'name email avatar role departmentRole departmentMemberships isActive');
     if (!dept) return res.status(404).json({ success: false, message: 'Department not found' });
     res.json({ success: true, department: dept });
   } catch (err) {
@@ -77,40 +122,48 @@ exports.getDepartment = async (req, res) => {
 // @PUT /api/departments/:id
 exports.updateDepartment = async (req, res) => {
   try {
-    const { name, description, headId, color, icon, kpis, isActive, roles } = req.body;
+    const { name, description, color, icon, kpis, isActive, roles } = req.body;
     const dept = await Department.findById(req.params.id);
     if (!dept) return res.status(404).json({ success: false, message: 'Department not found' });
 
-    // Update head if changed
-    if (headId && String(headId) !== String(dept.headId)) {
-      if (dept.headId) {
-        const oldHead = await User.findById(dept.headId);
-        if (oldHead && oldHead.role === 'department_manager') {
-          oldHead.role = 'employee';
-          await oldHead.save();
-        }
+    if (wantsHeadIdsUpdate(req.body)) {
+      const newStrs = normalizeHeadIdsFromBody(req.body);
+      const newIds = newStrs.map((id) => new mongoose.Types.ObjectId(id));
+      const oldStrs = dept.headIds?.length
+        ? dept.headIds.map(String)
+        : dept.headId
+          ? [String(dept.headId)]
+          : [];
+      const removed = oldStrs.filter((id) => !newStrs.includes(id));
+      const added = newStrs.filter((id) => !oldStrs.includes(id));
+
+      for (const uid of removed) {
+        await maybeDemoteRemovedHead(uid, dept._id);
       }
-      await assignUserAsDepartmentHead(headId, dept._id);
-      const memberIds = dept.members.map(String);
-      if (!memberIds.includes(String(headId))) dept.members.push(headId);
+      for (const uid of added) {
+        await assignUserAsDepartmentHead(uid, dept._id);
+        const memberIds = dept.members.map(String);
+        if (!memberIds.includes(String(uid))) dept.members.push(uid);
+      }
+      dept.headIds = newIds;
     }
 
     if (name) dept.slug = name.toLowerCase().replace(/\s+/g, '_');
     Object.assign(dept, {
       ...(name && { name }),
       ...(description !== undefined && { description }),
-      ...(headId && { headId }),
       ...(color && { color }),
       ...(icon !== undefined && { icon }),
       ...(kpis && { kpis }),
       ...(isActive !== undefined && { isActive }),
-      ...(roles !== undefined && { roles: normalizeDeptRoles(roles) })
+      ...(roles !== undefined && { roles: normalizeDeptRoles(roles) }),
     });
     await dept.save();
 
     const updated = await Department.findById(dept._id)
       .populate('headId', 'name email avatar')
-      .populate('members', 'name email avatar role departmentRole');
+      .populate('headIds', 'name email avatar')
+      .populate('members', 'name email avatar role departmentRole departmentMemberships');
     res.json({ success: true, department: updated });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -128,13 +181,20 @@ exports.addMember = async (req, res) => {
     if (!memberIds.includes(String(userId))) dept.members.push(userId);
     await dept.save();
 
-    await User.findByIdAndUpdate(userId, {
-      departmentId: dept._id,
-      ...(departmentRole && { departmentRole })
-    });
+    const u = await User.findById(userId);
+    if (u) {
+      u.departmentMemberships = u.departmentMemberships || [];
+      const idx = u.departmentMemberships.findIndex((m) => String(m.departmentId) === String(dept._id));
+      if (idx >= 0) {
+        if (departmentRole) u.departmentMemberships[idx].role = departmentRole;
+      } else {
+        u.departmentMemberships.push({ departmentId: dept._id, role: departmentRole || '' });
+      }
+      await u.save();
+    }
 
     const updated = await Department.findById(dept._id)
-      .populate('members', 'name email avatar role departmentRole');
+      .populate('members', 'name email avatar role departmentRole departmentMemberships');
     res.json({ success: true, department: updated });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -150,7 +210,13 @@ exports.removeMember = async (req, res) => {
     dept.members = dept.members.filter(m => String(m) !== req.params.userId);
     await dept.save();
 
-    await User.findByIdAndUpdate(req.params.userId, { departmentId: null, departmentRole: '' });
+    const u = await User.findById(req.params.userId);
+    if (u) {
+      u.departmentMemberships = (u.departmentMemberships || []).filter(
+        (m) => String(m.departmentId) !== String(dept._id)
+      );
+      await u.save();
+    }
     res.json({ success: true, message: 'Member removed' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -168,7 +234,7 @@ exports.getDepartmentStats = async (req, res) => {
 
     const [projects, tasks] = await Promise.all([
       Project.find({ departmentId: req.params.id }),
-      Task.find({ departmentId: req.params.id })
+      Task.find({ departmentId: req.params.id, deletedAt: null })
     ]);
 
     const stats = {

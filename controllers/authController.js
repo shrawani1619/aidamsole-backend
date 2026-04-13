@@ -20,8 +20,11 @@ exports.login = async (req, res) => {
     if (!email || !password)
       return res.status(400).json({ success: false, message: 'Email and password required' });
 
-    const user = await User.findOne({ email }).select('+password').populate('departmentId', 'name slug color');
-    if (!user || !user.isActive)
+    const user = await User.findOne({ email })
+      .select('+password')
+      .populate('departmentId', 'name slug color')
+      .populate('departmentMemberships.departmentId', 'name slug color');
+    if (!user || !user.isActive || user.deletedAt)
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     const isMatch = await user.matchPassword(password);
@@ -38,6 +41,11 @@ exports.login = async (req, res) => {
       user: {
         _id: user._id, name: user.name, email: user.email, role: user.role,
         avatar: user.avatar, departmentId: user.departmentId, departmentRole: user.departmentRole,
+        departmentMemberships: user.departmentMemberships?.length
+          ? user.departmentMemberships
+          : (user.departmentId
+            ? [{ departmentId: user.departmentId, role: user.departmentRole || '' }]
+            : []),
         modulePermissions: user.modulePermissions,
         effectiveModulePermissions,
       }
@@ -51,7 +59,12 @@ exports.login = async (req, res) => {
 // @GET /api/auth/me
 exports.getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).populate('departmentId', 'name slug color icon');
+    const user = await User.findById(req.user._id)
+      .populate('departmentId', 'name slug color icon')
+      .populate('departmentMemberships.departmentId', 'name slug color icon');
+    if (!user || user.deletedAt) {
+      return res.status(401).json({ success: false, message: 'Account removed or in trash' });
+    }
     const u = user.toObject ? user.toObject() : user;
     u.effectiveModulePermissions = resolveModulePermissions(user);
     res.json({ success: true, user: u });
@@ -85,7 +98,7 @@ exports.forgotPassword = async (req, res) => {
     const msg =
       'If an account exists for this email, you will receive a link to reset your password shortly.';
     const user = await User.findOne({ email });
-    if (!user || !user.isActive) {
+    if (!user || !user.isActive || user.deletedAt) {
       return res.json({ success: true, message: msg });
     }
 
@@ -149,13 +162,16 @@ exports.updateProfile = async (req, res) => {
       update.phone = p.value;
     }
     if (Object.keys(update).length === 0) {
-      const user = await User.findById(req.user._id).populate('departmentId', 'name slug color icon');
+      const user = await User.findById(req.user._id)
+        .populate('departmentId', 'name slug color icon')
+        .populate('departmentMemberships.departmentId', 'name slug color icon');
       const u = user.toObject ? user.toObject() : user;
       u.effectiveModulePermissions = resolveModulePermissions(user);
       return res.json({ success: true, user: u });
     }
     const user = await User.findByIdAndUpdate(req.user._id, update, { new: true, runValidators: true })
-      .populate('departmentId', 'name slug color icon');
+      .populate('departmentId', 'name slug color icon')
+      .populate('departmentMemberships.departmentId', 'name slug color icon');
     const u = user.toObject ? user.toObject() : user;
     u.effectiveModulePermissions = resolveModulePermissions(user);
     res.json({ success: true, user: u });

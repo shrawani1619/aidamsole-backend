@@ -1,7 +1,69 @@
 const Task = require('../models/Task');
 const Notification = require('../models/Notification');
+const { logActivity } = require('../utils/logActivity');
 
 const toOid = (v) => (v && String(v).trim() ? v : null);
+
+/** Unique non-null ObjectIds from mixed inputs (string, populated doc, etc.) */
+function uniqReviewerOids(values) {
+  const seen = new Set();
+  const out = [];
+  for (const v of values || []) {
+    const raw = v && typeof v === 'object' && v._id ? v._id : v;
+    const id = toOid(raw);
+    if (id && !seen.has(String(id))) {
+      seen.add(String(id));
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+/** Resolve main-task reviewers from request body + optional previous task */
+function resolveMainReviewers(body, prevTask, isCreate) {
+  const hasReviewerIds = Object.prototype.hasOwnProperty.call(body, 'reviewerIds');
+  const hasReviewerId = Object.prototype.hasOwnProperty.call(body, 'reviewerId');
+  if (hasReviewerIds) {
+    const list = uniqReviewerOids(body.reviewerIds);
+    return { reviewerIds: list, reviewerId: list[0] || null };
+  }
+  if (hasReviewerId) {
+    const list = body.reviewerId ? uniqReviewerOids([body.reviewerId]) : [];
+    return { reviewerIds: list, reviewerId: list[0] || null };
+  }
+  if (!isCreate && prevTask) {
+    const list = prevTask.reviewerIds?.length
+      ? uniqReviewerOids(prevTask.reviewerIds)
+      : prevTask.reviewerId
+        ? uniqReviewerOids([prevTask.reviewerId])
+        : [];
+    return { reviewerIds: list, reviewerId: list[0] || null };
+  }
+  return { reviewerIds: [], reviewerId: null };
+}
+
+function isUserTaskReviewer(taskDoc, userId) {
+  const uid = String(userId);
+  const arr = (taskDoc.reviewerIds || []).map((id) => String(id));
+  if (arr.includes(uid)) return true;
+  if (taskDoc.reviewerId && String(taskDoc.reviewerId) === uid) return true;
+  return false;
+}
+
+/** Collect reviewer user ids from a possibly populated task for notifications */
+function reviewerUserIdsFromTask(task) {
+  const ids = [];
+  if (task.reviewerIds?.length) {
+    task.reviewerIds.forEach((r) => {
+      const id = r?._id || r;
+      if (id) ids.push(String(id));
+    });
+  } else if (task.reviewerId) {
+    const id = task.reviewerId._id || task.reviewerId;
+    if (id) ids.push(String(id));
+  }
+  return [...new Set(ids)];
+}
 
 /** Normalize subtasks: inherit parent ids when omitted; align completed with status */
 function normalizeSubtasksForParent(parent, subtasks) {
@@ -33,7 +95,7 @@ function normalizeSubtasksForParent(parent, subtasks) {
 // @GET /api/tasks
 exports.getTasks = async (req, res) => {
   try {
-    const filter = {};
+    const filter = { deletedAt: null };
     if (req.query.project) filter.projectId = req.query.project;
     if (req.query.client) filter.clientId = req.query.client;
     if (req.query.status) filter.status = req.query.status;
@@ -44,8 +106,20 @@ exports.getTasks = async (req, res) => {
 
     // RBAC
     if (!req.scopeAll) {
-      if (req.scopeDepartment) filter.departmentId = req.scopeDepartment;
-      if (req.scopeUser) filter.$or = [{ assigneeId: req.scopeUser }, { reviewerId: req.scopeUser }, { createdBy: req.scopeUser }];
+      if (req.scopeDepartments?.length) {
+        filter.departmentId =
+          req.scopeDepartments.length === 1
+            ? req.scopeDepartments[0]
+            : { $in: req.scopeDepartments };
+      }
+      if (req.scopeUser) {
+        filter.$or = [
+          { assigneeId: req.scopeUser },
+          { reviewerId: req.scopeUser },
+          { reviewerIds: req.scopeUser },
+          { createdBy: req.scopeUser }
+        ];
+      }
     }
 
     const page = parseInt(req.query.page) || 1;
@@ -59,6 +133,7 @@ exports.getTasks = async (req, res) => {
         .populate('departmentId', 'name slug color')
         .populate('assigneeId', 'name email avatar')
         .populate('reviewerId', 'name email avatar')
+        .populate('reviewerIds', 'name email avatar')
         .populate('createdBy', 'name email avatar')
         .sort({ dueDate: 1, priority: -1 })
         .skip(skip).limit(limit).lean(),
@@ -75,6 +150,9 @@ exports.getTasks = async (req, res) => {
 exports.createTask = async (req, res) => {
   try {
     const body = { ...req.body, createdBy: req.user._id };
+    const rr = resolveMainReviewers(body, null, true);
+    body.reviewerIds = rr.reviewerIds;
+    body.reviewerId = rr.reviewerId;
     if (body.subtasks?.length) {
       body.subtasks = normalizeSubtasksForParent(
         { projectId: body.projectId, clientId: body.clientId, departmentId: body.departmentId },
@@ -88,6 +166,7 @@ exports.createTask = async (req, res) => {
       .populate('departmentId', 'name slug color')
       .populate('assigneeId', 'name email avatar')
       .populate('reviewerId', 'name email avatar')
+      .populate('reviewerIds', 'name email avatar')
       .populate('subtasks.assigneeId', 'name email avatar')
       .populate('subtasks.reviewerId', 'name email avatar')
       .populate('subtasks.projectId', 'title service')
@@ -103,6 +182,18 @@ exports.createTask = async (req, res) => {
         message: `You have been assigned: ${task.title}`,
         link: `/tasks/${task._id}`,
         priority: req.body.priority === 'critical' ? 'high' : 'medium'
+      });
+    }
+    for (const rid of rr.reviewerIds) {
+      if (String(rid) === String(req.user._id)) continue;
+      if (req.body.assigneeId && String(rid) === String(req.body.assigneeId)) continue;
+      await Notification.create({
+        userId: rid,
+        type: 'task',
+        title: 'Review requested',
+        message: `You are a reviewer for: ${task.title}`,
+        link: `/tasks/${task._id}`,
+        priority: 'medium'
       });
     }
 
@@ -124,6 +215,7 @@ exports.getTask = async (req, res) => {
       .populate('departmentId', 'name slug color')
       .populate('assigneeId', 'name email avatar')
       .populate('reviewerId', 'name email avatar')
+      .populate('reviewerIds', 'name email avatar')
       .populate('createdBy', 'name email avatar')
       .populate('twoEyeApprovedBy', 'name email')
       .populate('subtasks.assigneeId', 'name email avatar')
@@ -133,7 +225,7 @@ exports.getTask = async (req, res) => {
       .populate('subtasks.departmentId', 'name slug color')
       .populate('timeLogs.userId', 'name email avatar')
       .populate('comments.userId', 'name email avatar');
-    if (!task) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!task || task.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
     res.json({ success: true, task });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -144,9 +236,12 @@ exports.getTask = async (req, res) => {
 exports.updateTask = async (req, res) => {
   try {
     const prevTask = await Task.findById(req.params.id);
-    if (!prevTask) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!prevTask || prevTask.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
 
     const body = { ...req.body };
+    const rr = resolveMainReviewers(body, prevTask, false);
+    body.reviewerIds = rr.reviewerIds;
+    body.reviewerId = rr.reviewerId;
     if (body.subtasks !== undefined) {
       body.subtasks = normalizeSubtasksForParent(
         {
@@ -163,6 +258,7 @@ exports.updateTask = async (req, res) => {
       .populate('clientId', 'name company logo')
       .populate('assigneeId', 'name email avatar')
       .populate('reviewerId', 'name email avatar')
+      .populate('reviewerIds', 'name email avatar')
       .populate('subtasks.assigneeId', 'name email avatar')
       .populate('subtasks.reviewerId', 'name email avatar')
       .populate('subtasks.projectId', 'title service')
@@ -171,10 +267,13 @@ exports.updateTask = async (req, res) => {
 
     // Notify on status change
     if (req.body.status && req.body.status !== prevTask.status) {
-      const notifyUser = task.reviewerId || task.assigneeId;
-      if (notifyUser && String(notifyUser._id) !== String(req.user._id)) {
+      const targets = new Set();
+      if (task.assigneeId) targets.add(String(task.assigneeId._id || task.assigneeId));
+      reviewerUserIdsFromTask(task).forEach((id) => targets.add(id));
+      for (const uid of targets) {
+        if (uid === String(req.user._id)) continue;
         await Notification.create({
-          userId: notifyUser._id,
+          userId: uid,
           type: 'task',
           title: 'Task Status Updated',
           message: `"${task.title}" status changed to ${req.body.status.replace(/_/g, ' ')}`,
@@ -195,14 +294,75 @@ exports.updateTask = async (req, res) => {
 exports.twoEyeApprove = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
-    if (!task) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!task || task.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
     if (String(task.assigneeId) === String(req.user._id)) {
       return res.status(400).json({ success: false, message: 'Assignee cannot approve their own task' });
+    }
+    if (!isUserTaskReviewer(task, req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Only a designated reviewer can approve this task' });
     }
     task.twoEyeApproved = true;
     task.twoEyeApprovedBy = req.user._id;
     task.status = 'approved';
     await task.save();
+    const populated = await Task.findById(task._id)
+      .populate('projectId', 'title service')
+      .populate('clientId', 'name company logo')
+      .populate('departmentId', 'name slug color')
+      .populate('assigneeId', 'name email avatar')
+      .populate('reviewerId', 'name email avatar')
+      .populate('reviewerIds', 'name email avatar');
+    res.json({ success: true, task: populated });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// @PUT /api/tasks/:id/reassign — assignee and/or reviewers (reviewers only)
+exports.reassignTask = async (req, res) => {
+  try {
+    const prev = await Task.findById(req.params.id);
+    if (!prev || prev.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!isUserTaskReviewer(prev, req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Only a task reviewer can reassign' });
+    }
+    const { assigneeId, reviewerIds } = req.body;
+    if (assigneeId === undefined && reviewerIds === undefined) {
+      return res.status(400).json({ success: false, message: 'Provide assigneeId and/or reviewerIds' });
+    }
+    const updates = {};
+    let newAssigneeOid = null;
+    if (assigneeId !== undefined) {
+      updates.assigneeId = toOid(assigneeId);
+      newAssigneeOid = updates.assigneeId;
+    }
+    if (reviewerIds !== undefined) {
+      const merged = resolveMainReviewers({ reviewerIds }, prev, false);
+      updates.reviewerIds = merged.reviewerIds;
+      updates.reviewerId = merged.reviewerId;
+    }
+    const task = await Task.findByIdAndUpdate(req.params.id, updates, { new: true, runValidators: true })
+      .populate('projectId', 'title service')
+      .populate('clientId', 'name company logo')
+      .populate('departmentId', 'name slug color')
+      .populate('assigneeId', 'name email avatar')
+      .populate('reviewerId', 'name email avatar')
+      .populate('reviewerIds', 'name email avatar');
+
+    const assigneeChanged =
+      newAssigneeOid != null && String(prev.assigneeId || '') !== String(newAssigneeOid);
+    if (assigneeChanged && newAssigneeOid && String(newAssigneeOid) !== String(req.user._id)) {
+      await Notification.create({
+        userId: newAssigneeOid,
+        type: 'task',
+        title: 'Task reassigned to you',
+        message: `"${task.title}" was reassigned by a reviewer`,
+        link: `/tasks/${task._id}`,
+        priority: 'medium'
+      });
+    }
+
+    req.app.get('io')?.emit('task:updated', { task });
     res.json({ success: true, task });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -212,6 +372,8 @@ exports.twoEyeApprove = async (req, res) => {
 // @POST /api/tasks/:id/comments
 exports.addComment = async (req, res) => {
   try {
+    const exists = await Task.findOne({ _id: req.params.id, deletedAt: null });
+    if (!exists) return res.status(404).json({ success: false, message: 'Task not found' });
     const task = await Task.findByIdAndUpdate(
       req.params.id,
       { $push: { comments: { userId: req.user._id, text: req.body.text } } },
@@ -227,6 +389,8 @@ exports.addComment = async (req, res) => {
 // @POST /api/tasks/:id/time-log
 exports.logTime = async (req, res) => {
   try {
+    const pre = await Task.findOne({ _id: req.params.id, deletedAt: null });
+    if (!pre) return res.status(404).json({ success: false, message: 'Task not found' });
     const { startTime, endTime, note } = req.body;
     const duration = Math.round((new Date(endTime) - new Date(startTime)) / 60000);
     const task = await Task.findByIdAndUpdate(
@@ -248,7 +412,7 @@ exports.logTime = async (req, res) => {
 exports.updateSubtask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
-    if (!task) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (!task || task.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
     const sub = task.subtasks.id(req.params.subtaskId);
     if (!sub) return res.status(404).json({ success: false, message: 'Subtask not found' });
 
@@ -302,11 +466,24 @@ exports.updateSubtask = async (req, res) => {
   }
 };
 
-// @DELETE /api/tasks/:id
+// @DELETE /api/tasks/:id  (soft-delete → trash)
 exports.deleteTask = async (req, res) => {
   try {
-    await Task.findByIdAndDelete(req.params.id);
-    res.json({ success: true, message: 'Task deleted' });
+    const task = await Task.findById(req.params.id);
+    if (!task) return res.status(404).json({ success: false, message: 'Task not found' });
+    if (task.deletedAt) return res.status(400).json({ success: false, message: 'Task is already in trash' });
+    task.deletedAt = new Date();
+    task.deletedBy = req.user._id;
+    await task.save();
+    await logActivity({
+      actorId: req.user._id,
+      action: 'TASK_TRASHED',
+      targetType: 'task',
+      targetId: task._id,
+      label: task.title,
+    });
+    req.app.get('io')?.emit('task:trashed', { taskId: String(task._id) });
+    res.json({ success: true, message: 'Task moved to trash' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

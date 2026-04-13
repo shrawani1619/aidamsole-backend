@@ -1,6 +1,6 @@
 /**
  * Module-based ACL: view / create / edit / delete per area, plus optional field-level view (dashboard).
- * super_admin & admin always get full access at resolve time.
+ * super_admin: full access. admin: same as full except History off by default (grant via per-user modulePermissions).
  */
 
 const MODULE_IDS = [
@@ -13,6 +13,10 @@ const MODULE_IDS = [
   'reports',
   'finance',
   'chat',
+  'trash',
+  'history',
+  /** Super admin only (enforced in middleware) — manage administrator accounts */
+  'admins',
 ];
 
 const ACTIONS = ['view', 'create', 'edit', 'delete'];
@@ -70,9 +74,18 @@ function fullAccess() {
   return out;
 }
 
+/** Admin role: all modules on except History (super_admin-only unless explicitly granted per user). */
+function adminDefaultAccess() {
+  const fa = fullAccess();
+  fa.history = emptyModule({ view: false, create: false, edit: false, delete: false });
+  fa.admins = emptyModule({ view: false, create: false, edit: false, delete: false });
+  return fa;
+}
+
 /** Baseline when user.modulePermissions is absent — mirrors previous role-based UX */
 function defaultsForRole(role) {
-  if (role === 'super_admin' || role === 'admin') return fullAccess();
+  if (role === 'super_admin') return fullAccess();
+  if (role === 'admin') return adminDefaultAccess();
 
   const out = {};
   MODULE_IDS.forEach((id) => {
@@ -97,6 +110,7 @@ function defaultsForRole(role) {
     out.reports = emptyModule({ view: true, create: false, edit: false, delete: false, fields: allReportsFields() });
     out.finance = emptyModule({ view: false });
     out.chat = emptyModule({ view: true, create: true, edit: false, delete: false });
+    out.trash = emptyModule({ view: false });
     return out;
   }
 
@@ -110,6 +124,7 @@ function defaultsForRole(role) {
   out.reports = emptyModule({ view: true, create: false, edit: false, delete: false, fields: allReportsFields() });
   out.finance = emptyModule({ view: false });
   out.chat = emptyModule({ view: true, create: true, edit: false, delete: false });
+  out.trash = emptyModule({ view: false });
   return out;
 }
 
@@ -135,7 +150,22 @@ function deepMergeModule(base, patch) {
 function resolveModulePermissions(user) {
   if (!user) return fullAccess();
   const role = user.role || 'employee';
-  if (role === 'super_admin' || role === 'admin') return fullAccess();
+  if (role === 'super_admin') return fullAccess();
+
+  if (role === 'admin') {
+    const base = defaultsForRole('admin');
+    const overrides = user.modulePermissions;
+    if (!isPlainObject(overrides) || Object.keys(overrides).length === 0) {
+      return base;
+    }
+    const out = { ...base };
+    MODULE_IDS.forEach((id) => {
+      if (overrides[id] !== undefined) {
+        out[id] = deepMergeModule(base[id] || emptyModule(), overrides[id]);
+      }
+    });
+    return out;
+  }
 
   const base = defaultsForRole(role);
   const overrides = user.modulePermissions;
@@ -205,4 +235,5 @@ module.exports = {
   sanitizeModulePermissions,
   defaultsForRole,
   fullAccess,
+  adminDefaultAccess,
 };

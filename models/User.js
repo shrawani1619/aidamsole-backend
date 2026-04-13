@@ -24,8 +24,15 @@ const userSchema = new mongoose.Schema({
     enum: ['super_admin', 'admin', 'department_manager', 'employee'],
     default: 'employee'
   },
+  /** Primary department (synced from first entry in departmentMemberships when that array is set). */
   departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
+  /** Role in primary department (synced from first membership). */
   departmentRole: { type: String, default: '' }, // e.g. SEO Executive, Ads Manager
+  /** One row per department: role can differ per department. */
+  departmentMemberships: [{
+    departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', required: true },
+    role: { type: String, default: '' },
+  }],
   isActive: { type: Boolean, default: true },
   lastLogin: { type: Date },
   fcmToken: { type: String, default: '' },
@@ -37,11 +44,26 @@ const userSchema = new mongoose.Schema({
   passwordResetExpires: { type: Date },
   /** Admin overrides merged with role defaults — see utils/modulePermissions.js */
   modulePermissions: { type: mongoose.Schema.Types.Mixed, default: undefined },
+  /** Soft-delete (trash) — excluded from team list; login blocked */
+  deletedAt: { type: Date, default: null },
+  deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, { timestamps: true });
 
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
   this.password = await bcrypt.hash(this.password, 12);
+  next();
+});
+
+userSchema.pre('save', function (next) {
+  const m = this.departmentMemberships;
+  if (Array.isArray(m) && m.length > 0) {
+    this.departmentId = m[0].departmentId;
+    this.departmentRole = m[0].role || '';
+  } else if (this.isModified('departmentMemberships')) {
+    this.departmentId = null;
+    this.departmentRole = '';
+  }
   next();
 });
 

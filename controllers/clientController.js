@@ -21,8 +21,11 @@ exports.getClients = async (req, res) => {
 
     // RBAC scope
     if (!req.scopeAll) {
-      if (req.scopeDepartment) {
-        filter.assignedDepartments = req.scopeDepartment;
+      if (req.scopeDepartments?.length) {
+        filter.assignedDepartments =
+          req.scopeDepartments.length === 1
+            ? req.scopeDepartments[0]
+            : { $in: req.scopeDepartments };
       } else if (req.scopeUser) {
         filter.assignedAM = req.scopeUser;
       }

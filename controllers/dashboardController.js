@@ -4,6 +4,7 @@ const Task = require('../models/Task');
 const Invoice = require('../models/Invoice');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
+const { departmentIdsFromUser } = require('../utils/departmentScope');
 
 // @GET /api/dashboard
 exports.getDashboard = async (req, res) => {
@@ -16,15 +17,26 @@ exports.getDashboard = async (req, res) => {
     // Base filters by role
     const clientFilter = {};
     const projectFilter = {};
-    const taskFilter = {};
+    const taskFilter = { deletedAt: null };
 
     if (!isAdmin) {
-      if (user.departmentId) {
-        clientFilter.assignedDepartments = user.departmentId;
-        projectFilter.departmentId = user.departmentId;
-        taskFilter.departmentId = user.departmentId;
+      const deptIds = departmentIdsFromUser(user);
+      if (deptIds.length) {
+        if (deptIds.length === 1) {
+          clientFilter.assignedDepartments = deptIds[0];
+          projectFilter.departmentId = deptIds[0];
+          taskFilter.departmentId = deptIds[0];
+        } else {
+          clientFilter.assignedDepartments = { $in: deptIds };
+          projectFilter.departmentId = { $in: deptIds };
+          taskFilter.departmentId = { $in: deptIds };
+        }
         if (user.role === 'employee') {
-          taskFilter.$or = [{ assigneeId: user._id }, { reviewerId: user._id }];
+          taskFilter.$or = [
+            { assigneeId: user._id },
+            { reviewerId: user._id },
+            { reviewerIds: user._id }
+          ];
         }
       }
     }
@@ -49,7 +61,7 @@ exports.getDashboard = async (req, res) => {
         { $group: { _id: '$status', count: { $sum: 1 } } }
       ]),
       // My open tasks
-      Task.find({ assigneeId: user._id, status: { $nin: ['done', 'approved'] } })
+      Task.find({ assigneeId: user._id, status: { $nin: ['done', 'approved'] }, deletedAt: null })
         .populate('projectId', 'title')
         .populate('clientId', 'name company logo')
         .sort({ dueDate: 1, priority: -1 })
@@ -109,7 +121,7 @@ exports.getDashboard = async (req, res) => {
         notifications,
         upcomingDeadlines,
         financial,
-        user: { name: user.name, role: user.role, department: user.departmentId }
+        user: { name: user.name, role: user.role, department: user.departmentId, departments: departmentIdsFromUser(user) }
       }
     });
   } catch (err) {
@@ -122,8 +134,12 @@ exports.getHealthScores = async (req, res) => {
   try {
     const filter = { status: { $in: ['active', 'at_risk'] } };
     if (!req.scopeAll) {
-      if (req.scopeDepartment) filter.assignedDepartments = req.scopeDepartment;
-      else if (req.scopeUser) filter.assignedAM = req.scopeUser;
+      if (req.scopeDepartments?.length) {
+        filter.assignedDepartments =
+          req.scopeDepartments.length === 1
+            ? req.scopeDepartments[0]
+            : { $in: req.scopeDepartments };
+      } else if (req.scopeUser) filter.assignedAM = req.scopeUser;
     }
 
     const clients = await Client.find(filter)
@@ -152,8 +168,13 @@ exports.getStandupData = async (req, res) => {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const today = new Date(); today.setHours(0, 0, 0, 0);
 
-    const filter = {};
-    if (req.scopeDepartment) filter.departmentId = req.scopeDepartment;
+    const filter = { deletedAt: null };
+    if (req.scopeDepartments?.length) {
+      filter.departmentId =
+        req.scopeDepartments.length === 1
+          ? req.scopeDepartments[0]
+          : { $in: req.scopeDepartments };
+    }
 
     const [completedYesterday, todayTasks, blockers, overdue] = await Promise.all([
       Task.find({ ...filter, status: 'done', updatedAt: { $gte: yesterday } })

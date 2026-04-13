@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { resolveModulePermissions } = require('../utils/modulePermissions');
+const { departmentIdsFromUser } = require('../utils/departmentScope');
 
 // Super admin always has full access — never block them
 const SUPER_ROLES = ['super_admin', 'admin'];
@@ -15,8 +16,10 @@ exports.protect = async (req, res, next) => {
   }
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = await User.findById(decoded.id).populate('departmentId');
-    if (!req.user || !req.user.isActive) {
+    req.user = await User.findById(decoded.id)
+      .populate('departmentId')
+      .populate('departmentMemberships.departmentId', 'name slug color');
+    if (!req.user || !req.user.isActive || req.user.deletedAt) {
       return res.status(401).json({ success: false, message: 'User not found or inactive' });
     }
     req.effectiveModulePermissions = resolveModulePermissions(req.user);
@@ -41,13 +44,16 @@ exports.departmentScope = (req, res, next) => {
   const role = req.user.role;
   if (SUPER_ROLES.includes(role)) {
     req.scopeAll = true;
+    req.scopeDepartments = [];
   } else if (role === 'department_manager') {
     req.scopeAll = false;
-    req.scopeDepartment = req.user.departmentId?._id || null;
+    req.scopeDepartments = departmentIdsFromUser(req.user);
+    req.scopeDepartment = req.scopeDepartments[0] || null;
   } else {
     req.scopeAll = false;
     req.scopeUser = req.user._id;
-    req.scopeDepartment = req.user.departmentId?._id || null;
+    req.scopeDepartments = departmentIdsFromUser(req.user);
+    req.scopeDepartment = req.scopeDepartments[0] || null;
   }
   next();
 };

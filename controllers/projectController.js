@@ -59,7 +59,12 @@ exports.getProjects = async (req, res) => {
 
     // RBAC scope
     if (!req.scopeAll) {
-      if (req.scopeDepartment) filter.departmentId = req.scopeDepartment;
+      if (req.scopeDepartments?.length) {
+        filter.departmentId =
+          req.scopeDepartments.length === 1
+            ? req.scopeDepartments[0]
+            : { $in: req.scopeDepartments };
+      }
       if (req.scopeUser) filter.$or = [{ managerId: req.scopeUser }, { team: req.scopeUser }];
     }
 
@@ -150,7 +155,7 @@ exports.getProject = async (req, res) => {
 
     // Task summary
     const taskStats = await Task.aggregate([
-      { $match: { projectId: project._id } },
+      { $match: { projectId: project._id, deletedAt: null } },
       { $group: { _id: '$status', count: { $sum: 1 } } }
     ]);
 
@@ -248,9 +253,10 @@ exports.deleteProject = async (req, res) => {
 // @GET /api/projects/:id/tasks
 exports.getProjectTasks = async (req, res) => {
   try {
-    const tasks = await Task.find({ projectId: req.params.id })
+    const tasks = await Task.find({ projectId: req.params.id, deletedAt: null })
       .populate('assigneeId', 'name email avatar')
       .populate('reviewerId', 'name email avatar')
+      .populate('reviewerIds', 'name email avatar')
       .sort({ dueDate: 1, priority: -1 })
       .lean();
     res.json({ success: true, count: tasks.length, tasks });

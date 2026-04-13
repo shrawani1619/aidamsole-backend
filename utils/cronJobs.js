@@ -14,7 +14,8 @@ module.exports = (io) => {
         {
           dueDate: { $lt: now },
           status: { $nin: ['done', 'approved'] },
-          isDelayed: false
+          isDelayed: false,
+          deletedAt: null,
         },
         { $set: { isDelayed: true } }
       );
@@ -107,13 +108,18 @@ module.exports = (io) => {
   // ── Every Monday 8:30 AM: weekly standup prep notification ──────────────────
   cron.schedule('30 8 * * 1', async () => {
     try {
-      const delayedCount = await Task.countDocuments({ isDelayed: true, status: { $nin: ['done', 'approved'] } });
+      const delayedCount = await Task.countDocuments({
+        isDelayed: true,
+        status: { $nin: ['done', 'approved'] },
+        deletedAt: null,
+      });
       const atRiskCount = await Client.countDocuments({ status: 'at_risk' });
 
       // Notify all admins/managers
       const managers = await require('../models/User').find({
         role: { $in: ['super_admin', 'admin', 'department_manager'] },
-        isActive: true
+        isActive: true,
+        deletedAt: null,
       }).select('_id');
 
       const notifications = managers.map(m => ({

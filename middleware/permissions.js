@@ -2,12 +2,18 @@ const { hasModuleAction } = require('../utils/modulePermissions');
 
 /**
  * After protect — requires req.user and req.effectiveModulePermissions (set in auth protect).
- * super_admin / admin always pass.
+ * Only super_admin bypasses; all other roles (including admin) use the resolved matrix.
  */
 function requireModuleAction(moduleId, action) {
   return (req, res, next) => {
     const role = req.user?.role;
-    if (role === 'super_admin' || role === 'admin') return next();
+    if (moduleId === 'admins' && role !== 'super_admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Only super admin can access the Administrators module',
+      });
+    }
+    if (role === 'super_admin') return next();
 
     const resolved = req.effectiveModulePermissions;
     if (!resolved) {

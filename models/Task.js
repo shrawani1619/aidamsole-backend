@@ -39,7 +39,9 @@ const taskSchema = new mongoose.Schema({
   clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
   departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', required: true },
   assigneeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  /** @deprecated Prefer reviewerIds; kept for legacy tasks and first-reviewer denorm */
   reviewerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  reviewerIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   status: {
     type: String,
@@ -72,12 +74,16 @@ const taskSchema = new mongoose.Schema({
   twoEyeApproved: { type: Boolean, default: false },
   twoEyeApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   isDelayed: { type: Boolean, default: false },
-  revisionCount: { type: Number, default: 0 }
+  revisionCount: { type: Number, default: 0 },
+  /** Soft-delete (trash) — excluded from task lists */
+  deletedAt: { type: Date, default: null },
+  deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 }, { timestamps: true });
 
 taskSchema.index({ projectId: 1, status: 1 });
 taskSchema.index({ assigneeId: 1, status: 1, dueDate: 1 });
 taskSchema.index({ departmentId: 1, status: 1 });
+taskSchema.index({ reviewerIds: 1 });
 taskSchema.index({ dueDate: 1, isDelayed: 1 });
 
 // Auto-flag delayed tasks

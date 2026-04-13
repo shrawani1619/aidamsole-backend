@@ -177,8 +177,12 @@ exports.getClientPerformanceReport = async (req, res) => {
 
     // RBAC
     if (!req.scopeAll) {
-      if (req.scopeDepartment) clientFilter.assignedDepartments = req.scopeDepartment;
-      else if (req.scopeUser) clientFilter.assignedAM = req.scopeUser;
+      if (req.scopeDepartments?.length) {
+        clientFilter.assignedDepartments =
+          req.scopeDepartments.length === 1
+            ? req.scopeDepartments[0]
+            : { $in: req.scopeDepartments };
+      } else if (req.scopeUser) clientFilter.assignedAM = req.scopeUser;
     }
 
     const clients = await Client.find(clientFilter)
@@ -207,7 +211,8 @@ exports.getClientPerformanceReport = async (req, res) => {
     // Tasks per client in range
     const tasks = await Task.find({
       ...(clientId ? { clientId } : {}),
-      createdAt: { $gte: start, $lte: end }
+      createdAt: { $gte: start, $lte: end },
+      deletedAt: null,
     }).lean();
 
     const tasksByClient = {};
@@ -248,10 +253,15 @@ exports.getTeamPerformanceReport = async (req, res) => {
     const { range = 'monthly', startDate, endDate, department, userId } = req.query;
     const { start, end } = getDateRange(range, startDate, endDate);
 
-    const taskFilter = { createdAt: { $gte: start, $lte: end } };
+    const taskFilter = { createdAt: { $gte: start, $lte: end }, deletedAt: null };
     if (department) taskFilter.departmentId = department;
     if (userId) taskFilter.assigneeId = userId;
-    if (!req.scopeAll && req.scopeDepartment) taskFilter.departmentId = req.scopeDepartment;
+    if (!req.scopeAll && req.scopeDepartments?.length) {
+      taskFilter.departmentId =
+        req.scopeDepartments.length === 1
+          ? req.scopeDepartments[0]
+          : { $in: req.scopeDepartments };
+    }
 
     const tasks = await Task.find(taskFilter)
       .populate('assigneeId', 'name email avatar')
@@ -318,8 +328,9 @@ exports.getTeamPerformanceReport = async (req, res) => {
 
     if (userId) {
       const employee = await User.findById(userId)
-        .select('name email role departmentRole departmentId lastLogin avatar phone isActive')
+        .select('name email role departmentRole departmentId departmentMemberships lastLogin avatar phone isActive')
         .populate('departmentId', 'name slug color')
+        .populate('departmentMemberships.departmentId', 'name slug color')
         .lean();
       const tasksByStatus = {};
       tasks.forEach(t => {
@@ -361,11 +372,15 @@ exports.getOperationalReport = async (req, res) => {
     const { start, end } = getDateRange(range, startDate, endDate);
 
     const projectFilter = { createdAt: { $gte: start, $lte: end } };
-    const taskFilter = { createdAt: { $gte: start, $lte: end } };
+    const taskFilter = { createdAt: { $gte: start, $lte: end }, deletedAt: null };
     if (department) { projectFilter.departmentId = department; taskFilter.departmentId = department; }
-    if (!req.scopeAll && req.scopeDepartment) {
-      projectFilter.departmentId = req.scopeDepartment;
-      taskFilter.departmentId = req.scopeDepartment;
+    if (!req.scopeAll && req.scopeDepartments?.length) {
+      const scoped =
+        req.scopeDepartments.length === 1
+          ? req.scopeDepartments[0]
+          : { $in: req.scopeDepartments };
+      projectFilter.departmentId = scoped;
+      taskFilter.departmentId = scoped;
     }
 
     const [projects, tasks, departments] = await Promise.all([
@@ -437,11 +452,11 @@ exports.getSuperAdminInsights = async (req, res) => {
       Client.countDocuments({ status: 'active' }),
       Client.countDocuments({ status: 'churned' }),
       Department.find({ isActive: true }).populate('members', '_id'),
-      User.countDocuments({ isActive: true }),
+      User.countDocuments({ isActive: true, deletedAt: null }),
       Invoice.find({ issueDate: { $gte: thisMonthStart }, status: 'paid' }),
       Invoice.find({ issueDate: { $gte: lastMonthStart, $lte: lastMonthEnd }, status: 'paid' }),
-      Task.countDocuments({ status: { $nin: ['done', 'approved'] } }),
-      Task.countDocuments({ isDelayed: true })
+      Task.countDocuments({ status: { $nin: ['done', 'approved'] }, deletedAt: null }),
+      Task.countDocuments({ isDelayed: true, deletedAt: null })
     ]);
 
     const mrr = await Client.aggregate([
@@ -457,8 +472,8 @@ exports.getSuperAdminInsights = async (req, res) => {
     const deptPerf = await Promise.all(departments.map(async dept => {
       const memberIds = dept.members.map(m => m._id);
       const [deptTasks, deptDelayed] = await Promise.all([
-        Task.countDocuments({ departmentId: dept._id }),
-        Task.countDocuments({ departmentId: dept._id, isDelayed: true })
+        Task.countDocuments({ departmentId: dept._id, deletedAt: null }),
+        Task.countDocuments({ departmentId: dept._id, isDelayed: true, deletedAt: null })
       ]);
       return {
         _id: dept._id, name: dept.name, color: dept.color,
