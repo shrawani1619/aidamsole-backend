@@ -33,6 +33,44 @@ function uniqReviewerOids(values) {
   return out;
 }
 
+/** Unique non-null assignee ids from mixed inputs */
+function uniqAssigneeOids(values) {
+  const seen = new Set();
+  const out = [];
+  for (const v of values || []) {
+    const raw = v && typeof v === 'object' && v._id ? v._id : v;
+    const id = toOid(raw);
+    if (id && !seen.has(String(id))) {
+      seen.add(String(id));
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+/** Resolve main-task assignees from body + previous task */
+function resolveMainAssignees(body, prevTask, isCreate) {
+  const hasAssigneeIds = Object.prototype.hasOwnProperty.call(body, 'assigneeIds');
+  const hasAssigneeId = Object.prototype.hasOwnProperty.call(body, 'assigneeId');
+  if (hasAssigneeIds) {
+    const list = uniqAssigneeOids(body.assigneeIds);
+    return { assigneeIds: list, assigneeId: list[0] || null };
+  }
+  if (hasAssigneeId) {
+    const list = body.assigneeId ? uniqAssigneeOids([body.assigneeId]) : [];
+    return { assigneeIds: list, assigneeId: list[0] || null };
+  }
+  if (!isCreate && prevTask) {
+    const list = prevTask.assigneeIds?.length
+      ? uniqAssigneeOids(prevTask.assigneeIds)
+      : prevTask.assigneeId
+        ? uniqAssigneeOids([prevTask.assigneeId])
+        : [];
+    return { assigneeIds: list, assigneeId: list[0] || null };
+  }
+  return { assigneeIds: [], assigneeId: null };
+}
+
 /** Resolve main-task reviewers from request body + optional previous task */
 function resolveMainReviewers(body, prevTask, isCreate) {
   const hasReviewerIds = Object.prototype.hasOwnProperty.call(body, 'reviewerIds');
@@ -142,6 +180,7 @@ exports.getTasks = async (req, res) => {
         .populate('clientId', 'name company logo')
         .populate('departmentId', 'name slug color')
         .populate('assigneeId', 'name email avatar')
+        .populate('assigneeIds', 'name email avatar')
         .populate('reviewerId', 'name email avatar')
         .populate('reviewerIds', 'name email avatar')
         .populate('createdBy', 'name email avatar')
@@ -205,6 +244,9 @@ exports.getTaskMeta = async (req, res) => {
 exports.createTask = async (req, res) => {
   try {
     const body = { ...req.body, createdBy: req.user._id };
+    const aa = resolveMainAssignees(body, null, true);
+    body.assigneeIds = aa.assigneeIds;
+    body.assigneeId = aa.assigneeId;
     const rr = resolveMainReviewers(body, null, true);
     body.reviewerIds = rr.reviewerIds;
     body.reviewerId = rr.reviewerId;
@@ -223,6 +265,7 @@ exports.createTask = async (req, res) => {
       .populate('clientId', 'name company logo')
       .populate('departmentId', 'name slug color')
       .populate('assigneeId', 'name email avatar')
+      .populate('assigneeIds', 'name email avatar')
       .populate('reviewerId', 'name email avatar')
       .populate('reviewerIds', 'name email avatar')
       .populate('subtasks.assigneeId', 'name email avatar')
@@ -231,10 +274,11 @@ exports.createTask = async (req, res) => {
       .populate('subtasks.clientId', 'name company logo')
       .populate('subtasks.departmentId', 'name slug color');
 
-    // Notify assignee
-    if (req.body.assigneeId && String(req.body.assigneeId) !== String(req.user._id)) {
+    // Notify assignees
+    for (const aid of aa.assigneeIds) {
+      if (String(aid) === String(req.user._id)) continue;
       await Notification.create({
-        userId: req.body.assigneeId,
+        userId: aid,
         type: 'task',
         title: 'New Task Assigned',
         message: `You have been assigned: ${task.title}`,
@@ -244,7 +288,7 @@ exports.createTask = async (req, res) => {
     }
     for (const rid of rr.reviewerIds) {
       if (String(rid) === String(req.user._id)) continue;
-      if (req.body.assigneeId && String(rid) === String(req.body.assigneeId)) continue;
+      if (aa.assigneeIds.some((aid) => String(aid) === String(rid))) continue;
       await Notification.create({
         userId: rid,
         type: 'task',
@@ -272,6 +316,7 @@ exports.getTask = async (req, res) => {
       .populate('clientId', 'name company logo')
       .populate('departmentId', 'name slug color')
       .populate('assigneeId', 'name email avatar')
+      .populate('assigneeIds', 'name email avatar')
       .populate('reviewerId', 'name email avatar')
       .populate('reviewerIds', 'name email avatar')
       .populate('createdBy', 'name email avatar')
@@ -308,6 +353,9 @@ exports.updateTask = async (req, res) => {
         return res.status(403).json({ success: false, message: 'You cannot move this task to that client' });
       }
     }
+    const aa = resolveMainAssignees(body, prevTask, false);
+    body.assigneeIds = aa.assigneeIds;
+    body.assigneeId = aa.assigneeId;
     const rr = resolveMainReviewers(body, prevTask, false);
     body.reviewerIds = rr.reviewerIds;
     body.reviewerId = rr.reviewerId;
@@ -326,6 +374,7 @@ exports.updateTask = async (req, res) => {
       .populate('projectId', 'title service')
       .populate('clientId', 'name company logo')
       .populate('assigneeId', 'name email avatar')
+      .populate('assigneeIds', 'name email avatar')
       .populate('reviewerId', 'name email avatar')
       .populate('reviewerIds', 'name email avatar')
       .populate('subtasks.assigneeId', 'name email avatar')
@@ -338,6 +387,7 @@ exports.updateTask = async (req, res) => {
     if (req.body.status && req.body.status !== prevTask.status) {
       const targets = new Set();
       if (task.assigneeId) targets.add(String(task.assigneeId._id || task.assigneeId));
+      (task.assigneeIds || []).forEach((a) => targets.add(String(a._id || a)));
       reviewerUserIdsFromTask(task).forEach((id) => targets.add(id));
       for (const uid of targets) {
         if (uid === String(req.user._id)) continue;
@@ -382,6 +432,7 @@ exports.twoEyeApprove = async (req, res) => {
       .populate('clientId', 'name company logo')
       .populate('departmentId', 'name slug color')
       .populate('assigneeId', 'name email avatar')
+      .populate('assigneeIds', 'name email avatar')
       .populate('reviewerId', 'name email avatar')
       .populate('reviewerIds', 'name email avatar');
     res.json({ success: true, task: populated });
@@ -421,6 +472,7 @@ exports.reassignTask = async (req, res) => {
       .populate('clientId', 'name company logo')
       .populate('departmentId', 'name slug color')
       .populate('assigneeId', 'name email avatar')
+      .populate('assigneeIds', 'name email avatar')
       .populate('reviewerId', 'name email avatar')
       .populate('reviewerIds', 'name email avatar');
 

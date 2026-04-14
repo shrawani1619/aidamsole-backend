@@ -39,6 +39,7 @@ const taskSchema = new mongoose.Schema({
   clientId: { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
   departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', required: true },
   assigneeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  assigneeIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   /** @deprecated Prefer reviewerIds; kept for legacy tasks and first-reviewer denorm */
   reviewerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   reviewerIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
