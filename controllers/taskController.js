@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Task = require('../models/Task');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
@@ -7,6 +8,7 @@ const Client = require('../models/Client');
 const { logActivity } = require('../utils/logActivity');
 const { isClientAdmin, clientIdsForAssignedAm, userHasClientAccess } = require('../utils/clientScope');
 const { userBelongsToAnyDepartmentClause } = require('../utils/departmentScope');
+const { buildEmployeeTaskVisibilityOr } = require('../utils/taskVisibility');
 
 const toOid = (v) => (v && String(v).trim() ? v : null);
 
@@ -16,6 +18,49 @@ async function userOwnsClientForTask(req, clientId) {
   if (isClientAdmin(req.user)) return true;
   const c = await Client.findById(clientId).select('assignedAM projectManager').lean();
   return !!(c && userHasClientAccess(req.user._id, c));
+}
+
+/** Assignee, reviewer (Two-Eye), creator, or subtask assignee/reviewer */
+function userIsTaskParticipant(userId, taskDoc) {
+  const uid = String(userId);
+  if (!taskDoc) return false;
+  if (String(taskDoc.assigneeId || '') === uid) return true;
+  if ((taskDoc.assigneeIds || []).some((id) => String(id) === uid)) return true;
+  if (isUserTaskReviewer(taskDoc, userId)) return true;
+  if (String(taskDoc.createdBy || '') === uid) return true;
+  for (const s of taskDoc.subtasks || []) {
+    if (!s) continue;
+    if (String(s.assigneeId || '') === uid) return true;
+    if (s.reviewerId && String(s.reviewerId) === uid) return true;
+  }
+  return false;
+}
+
+/** Read/update access: client AM/PM, admin, or task participant */
+async function canAccessTask(req, taskDoc) {
+  if (!taskDoc) return false;
+  if (isClientAdmin(req.user)) return true;
+  if (await userOwnsClientForTask(req, taskDoc.clientId)) return true;
+  return userIsTaskParticipant(req.user._id, taskDoc);
+}
+
+/** Push real-time toast to a specific user (when they have a socket) */
+function emitTaskNotification(req, notifDoc) {
+  if (!notifDoc?.userId) return;
+  const io = req.app.get('io');
+  const connectedUsers = req.app.get('connectedUsers') || {};
+  const sockId = connectedUsers[String(notifDoc.userId)];
+  const payload = {
+    id: String(notifDoc._id),
+    type: notifDoc.type,
+    title: notifDoc.title,
+    message: notifDoc.message,
+    link: notifDoc.link || '',
+  };
+  if (io && sockId) {
+    io.to(sockId).emit('notification:new', payload);
+    io.to(sockId).emit('new_notification', payload);
+  }
 }
 
 /** Unique non-null ObjectIds from mixed inputs (string, populated doc, etc.) */
@@ -156,18 +201,10 @@ exports.getTasks = async (req, res) => {
     if (req.query.delayed === 'true') filter.isDelayed = true;
     if (req.query.search) filter.title = { $regex: req.query.search, $options: 'i' };
 
-    // Non-admins only see tasks for clients where they are the assigned account manager
+    // Non-admins: AM/PM clients OR assignee / reviewer / creator / subtask (explicit $in + $expr)
     if (!isClientAdmin(req.user)) {
       const myClientIds = await clientIdsForAssignedAm(req.user._id);
-      const allowed = new Set(myClientIds.map(String));
-      if (req.query.client) {
-        if (!allowed.has(String(req.query.client))) filter._id = { $in: [] };
-      } else if (req.query.project) {
-        const proj = await Project.findById(req.query.project).select('clientId').lean();
-        if (!proj || !allowed.has(String(proj.clientId))) filter._id = { $in: [] };
-      } else {
-        filter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
-      }
+      filter.$and = [...(filter.$and || []), buildEmployeeTaskVisibilityOr(req.user._id, myClientIds)];
     }
 
     const page = parseInt(req.query.page) || 1;
@@ -277,7 +314,7 @@ exports.createTask = async (req, res) => {
     // Notify assignees
     for (const aid of aa.assigneeIds) {
       if (String(aid) === String(req.user._id)) continue;
-      await Notification.create({
+      const n = await Notification.create({
         userId: aid,
         type: 'task',
         title: 'New Task Assigned',
@@ -285,11 +322,12 @@ exports.createTask = async (req, res) => {
         link: `/tasks/${task._id}`,
         priority: req.body.priority === 'critical' ? 'high' : 'medium'
       });
+      emitTaskNotification(req, n);
     }
     for (const rid of rr.reviewerIds) {
       if (String(rid) === String(req.user._id)) continue;
-      if (aa.assigneeIds.some((aid) => String(aid) === String(rid))) continue;
-      await Notification.create({
+      if (aa.assigneeIds.some((a) => String(a) === String(rid))) continue;
+      const n = await Notification.create({
         userId: rid,
         type: 'task',
         title: 'Review requested',
@@ -297,6 +335,7 @@ exports.createTask = async (req, res) => {
         link: `/tasks/${task._id}`,
         priority: 'medium'
       });
+      emitTaskNotification(req, n);
     }
 
     // Emit socket event
@@ -329,7 +368,7 @@ exports.getTask = async (req, res) => {
       .populate('timeLogs.userId', 'name email avatar')
       .populate('comments.userId', 'name email avatar');
     if (!task || task.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
-    if (!(await userOwnsClientForTask(req, task.clientId))) {
+    if (!(await canAccessTask(req, task))) {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
     res.json({ success: true, task });
@@ -343,7 +382,7 @@ exports.updateTask = async (req, res) => {
   try {
     const prevTask = await Task.findById(req.params.id);
     if (!prevTask || prevTask.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
-    if (!(await userOwnsClientForTask(req, prevTask.clientId))) {
+    if (!(await canAccessTask(req, prevTask))) {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
 
@@ -383,6 +422,25 @@ exports.updateTask = async (req, res) => {
       .populate('subtasks.clientId', 'name company logo')
       .populate('subtasks.departmentId', 'name slug color');
 
+    const prevAssigneeSet = new Set(
+      [...(prevTask.assigneeIds || []).map((id) => String(id)), String(prevTask.assigneeId || '')].filter(Boolean)
+    );
+    const newAssigneeSet = new Set(aa.assigneeIds.map(String));
+    for (const aid of newAssigneeSet) {
+      if (!prevAssigneeSet.has(aid) && aid !== String(req.user._id)) {
+        const n = await Notification.create({
+          userId: aid,
+          type: 'task',
+          title: 'New Task Assigned',
+          message: `You have been assigned: ${task.title}`,
+          link: `/tasks/${task._id}`,
+          priority:
+            req.body.priority === 'critical' || task.priority === 'critical' ? 'high' : 'medium'
+        });
+        emitTaskNotification(req, n);
+      }
+    }
+
     // Notify on status change
     if (req.body.status && req.body.status !== prevTask.status) {
       const targets = new Set();
@@ -391,7 +449,7 @@ exports.updateTask = async (req, res) => {
       reviewerUserIdsFromTask(task).forEach((id) => targets.add(id));
       for (const uid of targets) {
         if (uid === String(req.user._id)) continue;
-        await Notification.create({
+        const n = await Notification.create({
           userId: uid,
           type: 'task',
           title: 'Task Status Updated',
@@ -399,6 +457,7 @@ exports.updateTask = async (req, res) => {
           link: `/tasks/${task._id}`,
           priority: 'medium'
         });
+        emitTaskNotification(req, n);
       }
     }
 
@@ -414,7 +473,7 @@ exports.twoEyeApprove = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
     if (!task || task.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
-    if (!(await userOwnsClientForTask(req, task.clientId))) {
+    if (!(await canAccessTask(req, task))) {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
     if (String(task.assigneeId) === String(req.user._id)) {
@@ -446,7 +505,7 @@ exports.reassignTask = async (req, res) => {
   try {
     const prev = await Task.findById(req.params.id);
     if (!prev || prev.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
-    if (!(await userOwnsClientForTask(req, prev.clientId))) {
+    if (!(await canAccessTask(req, prev))) {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
     if (!isUserTaskReviewer(prev, req.user._id)) {
@@ -479,7 +538,7 @@ exports.reassignTask = async (req, res) => {
     const assigneeChanged =
       newAssigneeOid != null && String(prev.assigneeId || '') !== String(newAssigneeOid);
     if (assigneeChanged && newAssigneeOid && String(newAssigneeOid) !== String(req.user._id)) {
-      await Notification.create({
+      const n = await Notification.create({
         userId: newAssigneeOid,
         type: 'task',
         title: 'Task reassigned to you',
@@ -487,6 +546,7 @@ exports.reassignTask = async (req, res) => {
         link: `/tasks/${task._id}`,
         priority: 'medium'
       });
+      emitTaskNotification(req, n);
     }
 
     req.app.get('io')?.emit('task:updated', { task });
@@ -501,7 +561,7 @@ exports.addComment = async (req, res) => {
   try {
     const exists = await Task.findOne({ _id: req.params.id, deletedAt: null });
     if (!exists) return res.status(404).json({ success: false, message: 'Task not found' });
-    if (!(await userOwnsClientForTask(req, exists.clientId))) {
+    if (!(await canAccessTask(req, exists))) {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
     const task = await Task.findByIdAndUpdate(
@@ -521,7 +581,7 @@ exports.logTime = async (req, res) => {
   try {
     const pre = await Task.findOne({ _id: req.params.id, deletedAt: null });
     if (!pre) return res.status(404).json({ success: false, message: 'Task not found' });
-    if (!(await userOwnsClientForTask(req, pre.clientId))) {
+    if (!(await canAccessTask(req, pre))) {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
     const { startTime, endTime, note } = req.body;
@@ -546,7 +606,7 @@ exports.updateSubtask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
     if (!task || task.deletedAt) return res.status(404).json({ success: false, message: 'Task not found' });
-    if (!(await userOwnsClientForTask(req, task.clientId))) {
+    if (!(await canAccessTask(req, task))) {
       return res.status(404).json({ success: false, message: 'Task not found' });
     }
     const sub = task.subtasks.id(req.params.subtaskId);

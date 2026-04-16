@@ -4,16 +4,24 @@ const Notification = require('../models/Notification');
 exports.getNotifications = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = 20;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
     const filter = { userId: req.user._id };
     if (req.query.unread === 'true') filter.isRead = false;
 
-    const [notifications, unreadCount] = await Promise.all([
+    const [notifications, unreadCount, total] = await Promise.all([
       Notification.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
-      Notification.countDocuments({ userId: req.user._id, isRead: false })
+      Notification.countDocuments({ userId: req.user._id, isRead: false }),
+      Notification.countDocuments(filter)
     ]);
 
-    res.json({ success: true, notifications, unreadCount });
+    res.json({
+      success: true,
+      notifications,
+      unreadCount,
+      total,
+      page,
+      pages: Math.ceil(total / limit) || 1
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

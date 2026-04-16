@@ -6,6 +6,7 @@ const Notification = require('../models/Notification');
 const User = require('../models/User');
 const { departmentIdsFromUser } = require('../utils/departmentScope');
 const { isClientAdmin } = require('../utils/clientScope');
+const { buildEmployeeTaskVisibilityOr, participantIdVariants } = require('../utils/taskVisibility');
 
 // @GET /api/dashboard
 exports.getDashboard = async (req, res) => {
@@ -18,7 +19,7 @@ exports.getDashboard = async (req, res) => {
     // Base filters by role — non-admins only see their own clients (assigned AM) and related projects/tasks
     const clientFilter = {};
     const projectFilter = {};
-    const taskFilter = { deletedAt: null };
+    let taskFilter = { deletedAt: null };
     let myClientIds = [];
 
     if (!isAdmin) {
@@ -27,18 +28,24 @@ exports.getDashboard = async (req, res) => {
       }).distinct('_id');
       clientFilter.$or = [{ assignedAM: user._id }, { projectManager: user._id }];
       projectFilter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
-      taskFilter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
+      // Tasks: same visibility as /api/tasks — not only "my clients" (employees must see assigned work)
+      taskFilter = {
+        deletedAt: null,
+        $and: [buildEmployeeTaskVisibilityOr(user._id, myClientIds)],
+      };
     }
 
+    const idList = participantIdVariants(user._id);
     const myTasksQuery = {
-      assigneeId: user._id,
-      status: { $nin: ['done', 'approved'] },
       deletedAt: null,
+      status: { $nin: ['done', 'approved'] },
+      $or: [
+        { assigneeId: { $in: idList } },
+        { assigneeIds: { $in: idList } },
+        { reviewerId: { $in: idList } },
+        { reviewerIds: { $in: idList } },
+      ],
     };
-    if (!isAdmin) {
-      if (myClientIds.length) myTasksQuery.clientId = { $in: myClientIds };
-      else myTasksQuery._id = { $in: [] };
-    }
 
     const [
       clientStats, projectStats, taskStats,
