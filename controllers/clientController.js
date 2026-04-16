@@ -3,6 +3,7 @@ const { parsePhone } = require('../utils/phone');
 const Project = require('../models/Project');
 const Invoice = require('../models/Invoice');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
 const { v4: uuidv4 } = require('uuid');
 const { isClientAdmin, userHasClientAccess } = require('../utils/clientScope');
 
@@ -28,6 +29,77 @@ function clientFilterForStatusBreakdown(req) {
     });
   }
   return and.length ? { $and: and } : {};
+}
+
+function parseHealthScoreOverall(raw) {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 10) return { error: 'Health score must be between 0 and 10' };
+  return { value: Number(n.toFixed(1)) };
+}
+
+async function createImmediateRenewalInvoiceIfEligible(clientRow) {
+  try {
+    if (!clientRow?._id || !clientRow.renewalDate) return;
+
+    const amount = Number(clientRow.contractValue) || 0;
+    if (amount <= 0) return;
+
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const plus8End = new Date(now);
+    plus8End.setDate(plus8End.getDate() + 8);
+    plus8End.setHours(23, 59, 59, 999);
+
+    const due = new Date(clientRow.renewalDate);
+    if (Number.isNaN(due.getTime())) return;
+    if (due < todayStart || due > plus8End) return;
+
+    const dueStart = new Date(due); dueStart.setHours(0, 0, 0, 0);
+    const dueEnd = new Date(due); dueEnd.setHours(23, 59, 59, 999);
+
+    const existing = await Invoice.findOne({
+      clientId: clientRow._id,
+      dueDate: { $gte: dueStart, $lte: dueEnd },
+      status: { $ne: 'cancelled' },
+    }).select('_id').lean();
+    if (existing) return;
+
+    const fallbackUser = await User.findOne({
+      role: { $in: ['super_admin', 'admin'] },
+      isActive: true,
+      deletedAt: null,
+    }).select('_id').lean();
+
+    const createdBy = clientRow.assignedAM || clientRow.projectManager || fallbackUser?._id;
+    if (!createdBy) return;
+
+    const service = Array.isArray(clientRow.services) && clientRow.services.length ? clientRow.services[0] : 'Other';
+    await Invoice.create({
+      clientId: clientRow._id,
+      createdBy,
+      status: 'draft',
+      source: 'renewal_t_minus_8',
+      issueDate: now,
+      dueDate: due,
+      lineItems: [{
+        description: `Renewal invoice for ${clientRow.company}`,
+        service,
+        quantity: 1,
+        unitPrice: amount,
+        total: amount,
+      }],
+      subtotal: amount,
+      taxRate: 18,
+      taxAmount: (amount * 18) / 100,
+      discount: 0,
+      total: amount + (amount * 18) / 100,
+      notes: `Auto-generated immediately on client save (T-8 window) for ${due.toLocaleDateString('en-IN')}`,
+    });
+  } catch (err) {
+    console.error('Immediate renewal invoice generation error:', err.message);
+  }
 }
 
 // @GET /api/clients
@@ -117,8 +189,19 @@ exports.createClient = async (req, res) => {
       data.assignedAM = req.user._id;
       delete data.contractValue;
     }
+    const hs = parseHealthScoreOverall(data.healthScoreOverall);
+    if (hs?.error) return res.status(400).json({ success: false, message: hs.error });
+    delete data.healthScoreOverall;
+    if (hs?.value != null) {
+      data.healthScore = {
+        ...(data.healthScore || {}),
+        overall: hs.value,
+        lastUpdated: new Date(),
+      };
+    }
 
     const client = await Client.create(data);
+    await createImmediateRenewalInvoiceIfEligible(client);
     const populated = await Client.findById(client._id)
       .populate('assignedAM', 'name email avatar')
       .populate('projectManager', 'name email avatar')
@@ -216,11 +299,21 @@ exports.updateClient = async (req, res) => {
       delete payload.projectManager;
       delete payload.contractValue;
     }
+    const hs = parseHealthScoreOverall(payload.healthScoreOverall);
+    if (hs?.error) return res.status(400).json({ success: false, message: hs.error });
+    delete payload.healthScoreOverall;
+    if (hs?.value != null) {
+      payload['healthScore.overall'] = hs.value;
+      payload['healthScore.lastUpdated'] = new Date();
+      if (hs.value < 5 && existing.status === 'active') payload.status = 'at_risk';
+      if (hs.value >= 8 && existing.status === 'at_risk') payload.status = 'active';
+    }
     const client = await Client.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true })
       .populate('assignedAM', 'name email avatar')
       .populate('projectManager', 'name email avatar')
       .populate('assignedDepartments', 'name slug color');
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    await createImmediateRenewalInvoiceIfEligible(client);
     const updatedOut = client.toObject ? client.toObject() : client;
     if (!isClientAdmin(req.user)) delete updatedOut.contractValue;
     res.json({ success: true, client: updatedOut });

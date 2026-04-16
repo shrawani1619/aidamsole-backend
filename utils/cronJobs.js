@@ -3,8 +3,81 @@ const Client = require('../models/Client');
 const Task = require('../models/Task');
 const Invoice = require('../models/Invoice');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
 
 module.exports = (io) => {
+  const runAutoRenewalInvoices = async () => {
+    try {
+      const now = new Date();
+      const todayStart = new Date(now);
+      todayStart.setHours(0, 0, 0, 0);
+      const plus8End = new Date(now);
+      plus8End.setDate(plus8End.getDate() + 8);
+      plus8End.setHours(23, 59, 59, 999);
+
+      const fallbackUser = await User.findOne({
+        role: { $in: ['super_admin', 'admin'] },
+        isActive: true,
+        deletedAt: null,
+      }).select('_id').lean();
+
+      const renewingClients = await Client.find({
+        renewalDate: { $gte: todayStart, $lte: plus8End },
+        contractValue: { $gt: 0 },
+      })
+        .select('company renewalDate contractValue services assignedAM projectManager')
+        .lean();
+
+      let createdCount = 0;
+      for (const client of renewingClients) {
+        const due = new Date(client.renewalDate);
+        const dueStart = new Date(due); dueStart.setHours(0, 0, 0, 0);
+        const dueEnd = new Date(due); dueEnd.setHours(23, 59, 59, 999);
+
+        // Duplicate guard: if any non-cancelled invoice already exists for this client+renewal day, skip.
+        const existing = await Invoice.findOne({
+          clientId: client._id,
+          dueDate: { $gte: dueStart, $lte: dueEnd },
+          status: { $ne: 'cancelled' },
+        }).select('_id').lean();
+        if (existing) continue;
+
+        const createdBy = client.assignedAM || client.projectManager || fallbackUser?._id;
+        if (!createdBy) continue;
+
+        const service = Array.isArray(client.services) && client.services.length ? client.services[0] : 'Other';
+        const amount = Number(client.contractValue) || 0;
+        if (amount <= 0) continue;
+
+        await Invoice.create({
+          clientId: client._id,
+          createdBy,
+          status: 'draft',
+          source: 'renewal_t_minus_8',
+          issueDate: now,
+          dueDate: due,
+          lineItems: [{
+            description: `Renewal invoice for ${client.company}`,
+            service,
+            quantity: 1,
+            unitPrice: amount,
+            total: amount,
+          }],
+          subtotal: amount,
+          taxRate: 18,
+          taxAmount: (amount * 18) / 100,
+          discount: 0,
+          total: amount + (amount * 18) / 100,
+          notes: `Auto-generated 8 days before renewal (${due.toLocaleDateString('en-IN')})`,
+        });
+        createdCount++;
+      }
+
+      console.log(`🧾 Auto-renewal scan complete: ${renewingClients.length} candidate client(s), ${createdCount} invoice(s) created`);
+    } catch (err) {
+      console.error('Cron auto renewal invoice error:', err.message);
+    }
+  };
 
   // ── Every hour: flag overdue tasks ──────────────────────────────────────────
   cron.schedule('0 * * * *', async () => {
@@ -137,6 +210,14 @@ module.exports = (io) => {
       console.error('Cron standup error:', err.message);
     }
   });
+
+  // ── Every day 8:45 AM: auto-generate renewal invoices (8 days before renewal) ─
+  cron.schedule('45 8 * * *', async () => {
+    await runAutoRenewalInvoices();
+  });
+
+  // Run once on server start so users don't have to wait for 8:45 schedule.
+  runAutoRenewalInvoices();
 
   console.log('✅ Cron jobs registered');
 };

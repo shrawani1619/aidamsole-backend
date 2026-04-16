@@ -49,6 +49,16 @@ function redactProjectFinancialsInPlace(project, user) {
   delete project.spent;
 }
 
+function normalizeProgressField(body) {
+  if (!body || body.progress === undefined || body.progress === null || body.progress === '') return null;
+  const value = Number(body.progress);
+  if (!Number.isFinite(value) || value < 0 || value > 100) {
+    return { error: 'Project progress must be between 0 and 100' };
+  }
+  body.progress = Math.round(value);
+  return { value: body.progress };
+}
+
 // @GET /api/projects
 exports.getProjects = async (req, res) => {
   try {
@@ -140,6 +150,10 @@ exports.createProject = async (req, res) => {
       body.serviceOtherDetail = d.slice(0, 200);
     }
     stripBudgetFieldsFromBody(body, req.user);
+    const progressParsed = normalizeProgressField(body);
+    if (progressParsed?.error) {
+      return res.status(400).json({ success: false, message: progressParsed.error });
+    }
 
     if (!isClientAdmin(req.user)) {
       const c = await Client.findById(body.clientId).select('assignedAM projectManager').lean();
@@ -222,6 +236,10 @@ exports.updateProject = async (req, res) => {
 
     const body = { ...req.body };
     stripBudgetFieldsFromBody(body, req.user);
+    const progressParsed = normalizeProgressField(body);
+    if (progressParsed?.error) {
+      return res.status(400).json({ success: false, message: progressParsed.error });
+    }
     if (!isClientAdmin(req.user) && body.clientId != null) {
       const curCid = existingProj.clientId?._id || existingProj.clientId;
       if (String(body.clientId) !== String(curCid)) {

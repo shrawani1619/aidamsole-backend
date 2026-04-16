@@ -35,6 +35,11 @@ const invoiceSchema = new mongoose.Schema({
   paymentMethod: { type: String, default: '' },
   paymentReference: { type: String, default: '' },
   notes: { type: String, default: '' },
+  source: {
+    type: String,
+    enum: ['manual', 'renewal_t_minus_8'],
+    default: 'manual'
+  },
   isRecurring: { type: Boolean, default: false },
   recurringInterval: { type: String, enum: ['monthly', 'quarterly', 'yearly'], default: 'monthly' }
 }, { timestamps: true });
@@ -42,6 +47,7 @@ const invoiceSchema = new mongoose.Schema({
 invoiceSchema.index({ clientId: 1, status: 1 });
 invoiceSchema.index({ dueDate: 1, status: 1 });
 invoiceSchema.index({ issueDate: 1 });
+invoiceSchema.index({ source: 1, createdAt: -1 });
 
 // Auto-generate invoice number
 invoiceSchema.pre('validate', async function (next) {

@@ -1,6 +1,55 @@
 const Invoice = require('../models/Invoice');
 const Client = require('../models/Client');
 const Notification = require('../models/Notification');
+const mongoose = require('mongoose');
+
+function toObjectIdOrNull(v) {
+  if (v == null || String(v).trim() === '') return null;
+  return mongoose.Types.ObjectId.isValid(String(v)) ? v : null;
+}
+
+function toNum(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeInvoicePayload(body = {}) {
+  const lineItems = Array.isArray(body.lineItems)
+    ? body.lineItems
+        .map((item) => {
+          const quantity = toNum(item?.quantity, 1);
+          const unitPrice = toNum(item?.unitPrice, 0);
+          const total = item?.total != null ? toNum(item.total, quantity * unitPrice) : quantity * unitPrice;
+          return {
+            description: String(item?.description || '').trim(),
+            service: item?.service || 'Other',
+            quantity,
+            unitPrice,
+            total,
+          };
+        })
+        .filter((item) => item.description)
+    : [];
+
+  const taxRate = toNum(body.taxRate, 18);
+  const discount = toNum(body.discount, 0);
+  const subtotal = lineItems.reduce((sum, item) => sum + toNum(item.total, 0), 0);
+  const taxAmount = (subtotal * taxRate) / 100;
+  const total = subtotal + taxAmount - discount;
+
+  return {
+    ...body,
+    clientId: toObjectIdOrNull(body.clientId),
+    projectId: toObjectIdOrNull(body.projectId),
+    dueDate: body.dueDate ? new Date(body.dueDate) : body.dueDate,
+    lineItems,
+    taxRate,
+    discount,
+    subtotal,
+    taxAmount,
+    total,
+  };
+}
 
 // @GET /api/finance/invoices
 exports.getInvoices = async (req, res) => {
@@ -9,6 +58,8 @@ exports.getInvoices = async (req, res) => {
     if (req.query.status) filter.status = req.query.status;
     if (req.query.client) filter.clientId = req.query.client;
     if (req.query.type) filter.type = req.query.type;
+    if (req.query.source) filter.source = req.query.source;
+    if (req.query.autoRenewal === 'true') filter.source = 'renewal_t_minus_8';
 
     const now = new Date();
     if (req.query.range) {
@@ -46,19 +97,20 @@ exports.getInvoices = async (req, res) => {
 // @POST /api/finance/invoices
 exports.createInvoice = async (req, res) => {
   try {
-    const { lineItems, taxRate = 18, discount = 0, ...rest } = req.body;
-    const subtotal = lineItems.reduce((sum, item) => sum + item.total, 0);
-    const taxAmount = (subtotal * taxRate) / 100;
-    const total = subtotal + taxAmount - discount;
+    const payload = normalizeInvoicePayload(req.body);
+    if (!payload.clientId) {
+      return res.status(400).json({ success: false, message: 'Client is required' });
+    }
+    if (!payload.dueDate || Number.isNaN(payload.dueDate.getTime())) {
+      return res.status(400).json({ success: false, message: 'Valid due date is required' });
+    }
+    if (!payload.lineItems.length) {
+      return res.status(400).json({ success: false, message: 'At least one line item is required' });
+    }
 
     const invoice = await Invoice.create({
-      ...rest,
-      lineItems,
-      subtotal,
-      taxRate,
-      taxAmount,
-      discount,
-      total,
+      ...payload,
+      source: 'manual',
       createdBy: req.user._id
     });
 
@@ -89,10 +141,23 @@ exports.getInvoice = async (req, res) => {
 // @PUT /api/finance/invoices/:id
 exports.updateInvoice = async (req, res) => {
   try {
-    const invoice = await Invoice.findByIdAndUpdate(req.params.id, req.body, { new: true })
+    const prev = await Invoice.findById(req.params.id);
+    if (!prev) return res.status(404).json({ success: false, message: 'Invoice not found' });
+
+    const payload = normalizeInvoicePayload(req.body);
+    if (!payload.clientId) {
+      return res.status(400).json({ success: false, message: 'Client is required' });
+    }
+    if (!payload.dueDate || Number.isNaN(new Date(payload.dueDate).getTime())) {
+      return res.status(400).json({ success: false, message: 'Valid due date is required' });
+    }
+    if (!payload.lineItems.length) {
+      return res.status(400).json({ success: false, message: 'At least one line item is required' });
+    }
+
+    const invoice = await Invoice.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true })
       .populate('clientId', 'name company logo')
       .populate('createdBy', 'name email');
-    if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
     res.json({ success: true, invoice });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

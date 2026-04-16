@@ -130,16 +130,30 @@ exports.getFinancialReport = async (req, res) => {
       });
     });
 
-    // Client-wise profitability
-    const clientRevMap = {};
-    invoices.filter(i => i.status === 'paid').forEach(inv => {
-      if (!inv.clientId) return;
-      const cid = String(inv.clientId._id);
-      if (!clientRevMap[cid]) clientRevMap[cid] = { client: inv.clientId, revenue: 0, invoiceCount: 0 };
-      clientRevMap[cid].revenue += inv.total;
-      clientRevMap[cid].invoiceCount++;
-    });
-    const clientProfitability = Object.values(clientRevMap).sort((a, b) => b.revenue - a.revenue);
+    // Top clients by revenue:
+    // - primary: paid invoices in selected range
+    // - fallback: billed invoices (except cancelled) when paid data is empty
+    const buildClientRevenue = (rows, amountPicker) => {
+      const map = {};
+      rows.forEach((inv) => {
+        if (!inv.clientId) return;
+        const cid = String(inv.clientId._id);
+        if (!map[cid]) map[cid] = { client: inv.clientId, revenue: 0, invoiceCount: 0 };
+        map[cid].revenue += amountPicker(inv);
+        map[cid].invoiceCount++;
+      });
+      return Object.values(map).sort((a, b) => b.revenue - a.revenue);
+    };
+    let clientProfitability = buildClientRevenue(
+      invoices.filter((i) => i.status === 'paid'),
+      (inv) => Number(inv.paidAmount || inv.total || 0)
+    );
+    if (clientProfitability.length === 0) {
+      clientProfitability = buildClientRevenue(
+        invoices.filter((i) => i.status !== 'cancelled'),
+        (inv) => Number(inv.total || 0)
+      );
+    }
 
     const data = {
       summary: {

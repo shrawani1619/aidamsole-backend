@@ -37,7 +37,7 @@ const clientSchema = new mongoose.Schema({
     default: 'lead'
   },
   healthScore: {
-    overall: { type: Number, default: 8, min: 1, max: 10 },
+    overall: { type: Number, default: 8, min: 0, max: 10 },
     engagement: { type: Number, default: 8 },
     results: { type: Number, default: 8 },
     payment: { type: Number, default: 8 },
