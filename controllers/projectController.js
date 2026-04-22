@@ -2,7 +2,12 @@ const Project = require('../models/Project');
 const Client = require('../models/Client');
 const Task = require('../models/Task');
 const Notification = require('../models/Notification');
-const { isClientAdmin, clientIdsForAssignedAm, userHasClientAccess } = require('../utils/clientScope');
+const {
+  isClientAdmin,
+  clientIdsForAssignedAm,
+  userHasClientAccess,
+  userHasProjectViewAccess,
+} = require('../utils/clientScope');
 
 const SERVICE_ENUM = Project.SERVICE_ENUM || [
   'SEO', 'Organic Marketing', 'Meta Ads', 'Google Ads', 'Social Media', 'Web Dev', 'Email Marketing', 'Content', 'Other',
@@ -70,18 +75,28 @@ exports.getProjects = async (req, res) => {
     if (req.query.service) filter.service = req.query.service;
     if (req.query.search) filter.title = { $regex: req.query.search, $options: 'i' };
 
-    // Non-admins only see projects whose client is assigned to them as AM
+    // Non-admins: clients where they are AM/PM, or projects where they are on team
     if (!isClientAdmin(req.user)) {
       const myClientIds = await clientIdsForAssignedAm(req.user._id);
-      const allowed = new Set(myClientIds.map(String));
+      const teamClause = { team: req.user._id };
+      const clientClause = myClientIds.length
+        ? { clientId: { $in: myClientIds } }
+        : { clientId: { $in: [] } };
+
       if (req.query.client) {
-        if (!allowed.has(String(req.query.client))) {
-          filter._id = { $in: [] };
-        } else {
-          filter.clientId = req.query.client;
-        }
+        delete filter.clientId;
+        filter.$and = [
+          ...(filter.$and || []),
+          { clientId: req.query.client },
+          {
+            $or: [
+              ...(myClientIds.length ? [clientClause] : []),
+              teamClause,
+            ],
+          },
+        ];
       } else {
-        filter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
+        filter.$or = [clientClause, teamClause];
       }
     }
 
@@ -203,10 +218,8 @@ exports.getProject = async (req, res) => {
       .populate('team', 'name email avatar role departmentRole')
       .lean();
     if (!project) return res.status(404).json({ success: false, message: 'Project not found' });
-    if (!isClientAdmin(req.user)) {
-      if (!project.clientId || !userHasClientAccess(req.user._id, project.clientId)) {
-        return res.status(404).json({ success: false, message: 'Project not found' });
-      }
+    if (!isClientAdmin(req.user) && !userHasProjectViewAccess(req.user._id, project)) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
     }
     normalizeServiceOut(project);
     redactProjectFinancialsInPlace(project, req.user);
@@ -355,10 +368,8 @@ exports.getProjectTasks = async (req, res) => {
   try {
     const pre = await Project.findById(req.params.id).populate('clientId', 'assignedAM projectManager').lean();
     if (!pre) return res.status(404).json({ success: false, message: 'Project not found' });
-    if (!isClientAdmin(req.user)) {
-      if (!pre.clientId || !userHasClientAccess(req.user._id, pre.clientId)) {
-        return res.status(404).json({ success: false, message: 'Project not found' });
-      }
+    if (!isClientAdmin(req.user) && !userHasProjectViewAccess(req.user._id, pre)) {
+      return res.status(404).json({ success: false, message: 'Project not found' });
     }
 
     const tasks = await Task.find({ projectId: req.params.id, deletedAt: null })

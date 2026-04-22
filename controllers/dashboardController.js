@@ -27,11 +27,16 @@ exports.getDashboard = async (req, res) => {
         $or: [{ assignedAM: user._id }, { projectManager: user._id }],
       }).distinct('_id');
       clientFilter.$or = [{ assignedAM: user._id }, { projectManager: user._id }];
-      projectFilter.clientId = myClientIds.length ? { $in: myClientIds } : { $in: [] };
-      // Tasks: same visibility as /api/tasks — not only "my clients" (employees must see assigned work)
+      if (myClientIds.length) {
+        projectFilter.$or = [{ clientId: { $in: myClientIds } }, { team: user._id }];
+      } else {
+        projectFilter.team = user._id;
+      }
+      const teamProjectIds = await Project.find({ team: user._id }).distinct('_id');
+      // Tasks: same visibility as /api/tasks — clients, project team, assignee/reviewer/creator
       taskFilter = {
         deletedAt: null,
-        $and: [buildEmployeeTaskVisibilityOr(user._id, myClientIds)],
+        $and: [buildEmployeeTaskVisibilityOr(user._id, myClientIds, teamProjectIds)],
       };
     }
 

@@ -89,14 +89,18 @@ function participantVisibilityExpr(uidStr) {
 }
 
 /**
- * Non–client-admin task visibility: AM/PM clients OR assignee/reviewer/creator/subtask participation.
- * Use inside filter: filter.$and = [..., buildEmployeeTaskVisibilityOr(...)]
+ * Non–client-admin task visibility: AM/PM clients, tasks on projects where the user is on team,
+ * OR assignee/reviewer/creator/subtask participation.
+ * Use inside filter: filter.$and = [..., buildEmployeeTaskVisibilityOr(userId, myClientIds, teamProjectIds)]
  */
-function buildEmployeeTaskVisibilityOr(userId, myClientIds) {
+function buildEmployeeTaskVisibilityOr(userId, myClientIds, teamProjectIds = []) {
   const uidStr = String(userId);
   const orBranches = [...participantMatchBranches(userId), participantVisibilityExpr(uidStr)];
   if (myClientIds?.length) {
     orBranches.push({ clientId: { $in: myClientIds } });
+  }
+  if (teamProjectIds?.length) {
+    orBranches.push({ projectId: { $in: teamProjectIds } });
   }
   return { $or: orBranches };
 }

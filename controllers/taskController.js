@@ -6,7 +6,12 @@ const Department = require('../models/Department');
 const Project = require('../models/Project');
 const Client = require('../models/Client');
 const { logActivity } = require('../utils/logActivity');
-const { isClientAdmin, clientIdsForAssignedAm, userHasClientAccess } = require('../utils/clientScope');
+const {
+  isClientAdmin,
+  clientIdsForAssignedAm,
+  userHasClientAccess,
+  userIsMemberOfProjectTeam,
+} = require('../utils/clientScope');
 const { userBelongsToAnyDepartmentClause } = require('../utils/departmentScope');
 const { buildEmployeeTaskVisibilityOr } = require('../utils/taskVisibility');
 
@@ -36,11 +41,12 @@ function userIsTaskParticipant(userId, taskDoc) {
   return false;
 }
 
-/** Read/update access: client AM/PM, admin, or task participant */
+/** Read/update access: client AM/PM, admin, project team member, or task participant */
 async function canAccessTask(req, taskDoc) {
   if (!taskDoc) return false;
   if (isClientAdmin(req.user)) return true;
   if (await userOwnsClientForTask(req, taskDoc.clientId)) return true;
+  if (await userIsMemberOfProjectTeam(req.user._id, taskDoc.projectId)) return true;
   return userIsTaskParticipant(req.user._id, taskDoc);
 }
 
@@ -201,10 +207,14 @@ exports.getTasks = async (req, res) => {
     if (req.query.delayed === 'true') filter.isDelayed = true;
     if (req.query.search) filter.title = { $regex: req.query.search, $options: 'i' };
 
-    // Non-admins: AM/PM clients OR assignee / reviewer / creator / subtask (explicit $in + $expr)
+    // Non-admins: AM/PM clients, project team, OR assignee / reviewer / creator / subtask
     if (!isClientAdmin(req.user)) {
       const myClientIds = await clientIdsForAssignedAm(req.user._id);
-      filter.$and = [...(filter.$and || []), buildEmployeeTaskVisibilityOr(req.user._id, myClientIds)];
+      const teamProjectIds = await Project.find({ team: req.user._id }).distinct('_id');
+      filter.$and = [
+        ...(filter.$and || []),
+        buildEmployeeTaskVisibilityOr(req.user._id, myClientIds, teamProjectIds),
+      ];
     }
 
     const page = parseInt(req.query.page) || 1;
@@ -252,7 +262,13 @@ exports.getTaskMeta = async (req, res) => {
     let projectQuery = {};
     if (!isClientAdmin(req.user)) {
       const myClientIds = await clientIdsForAssignedAm(req.user._id);
-      projectQuery = myClientIds.length ? { clientId: { $in: myClientIds } } : { _id: { $in: [] } };
+      if (myClientIds.length) {
+        projectQuery = {
+          $or: [{ clientId: { $in: myClientIds } }, { team: req.user._id }],
+        };
+      } else {
+        projectQuery = { team: req.user._id };
+      }
     }
 
     const [users, departments, projects] = await Promise.all([
