@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Client = require('../models/Client');
 const { parsePhone } = require('../utils/phone');
 const Project = require('../models/Project');
@@ -38,6 +39,74 @@ function parseHealthScoreOverall(raw) {
   return { value: Number(n.toFixed(1)) };
 }
 
+const CLIENT_SERVICE_ENUM = Client.schema.path('services').caster.enumValues || [];
+
+/** Avoid CastError from empty strings / populated refs on ObjectId and Date fields. */
+function sanitizeClientPayload(body) {
+  const data = { ...body };
+  for (const k of ['assignedAM', 'projectManager', 'referredBy']) {
+    if (!(k in data)) continue;
+    const v = data[k];
+    if (v === '' || v === undefined) {
+      data[k] = null;
+      continue;
+    }
+    if (v != null && typeof v === 'object' && v._id != null) {
+      data[k] = v._id;
+      continue;
+    }
+    if (typeof v === 'string' && v !== '' && !mongoose.Types.ObjectId.isValid(v)) {
+      delete data[k];
+    }
+  }
+  for (const k of ['contractStart', 'contractEnd', 'renewalDate', 'onboardingDate']) {
+    if (data[k] === '') delete data[k];
+  }
+  if ('contractValue' in data) {
+    if (data.contractValue === '' || data.contractValue == null) {
+      delete data.contractValue;
+    } else {
+      const n = Number(data.contractValue);
+      if (Number.isFinite(n)) data.contractValue = n;
+      else delete data.contractValue;
+    }
+  }
+  if (Array.isArray(data.assignedDepartments)) {
+    data.assignedDepartments = data.assignedDepartments
+      .map((id) => {
+        if (id == null || id === '') return null;
+        if (typeof id === 'object' && id._id != null) return id._id;
+        return id;
+      })
+      .filter((id) => id != null && id !== '' && mongoose.Types.ObjectId.isValid(String(id)));
+  }
+  if (Array.isArray(data.services)) {
+    const allowed = new Set(CLIENT_SERVICE_ENUM);
+    data.services = data.services.filter((s) => typeof s === 'string' && allowed.has(s));
+  }
+  return data;
+}
+
+/** Strip keys Mongoose does not know (avoids strict / cast errors on update). */
+function pickAllowedClientFields(data) {
+  const paths = Client.schema.paths;
+  const out = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (v === undefined) continue;
+    if (k.startsWith('healthScore.')) {
+      out[k] = v;
+      continue;
+    }
+    if (paths[k]) out[k] = v;
+  }
+  return out;
+}
+
+function userIdFromRef(ref) {
+  if (!ref) return null;
+  return ref._id != null ? ref._id : ref;
+}
+
 async function createImmediateRenewalInvoiceIfEligible(clientRow) {
   try {
     if (!clientRow?._id || !clientRow.renewalDate) return;
@@ -72,7 +141,8 @@ async function createImmediateRenewalInvoiceIfEligible(clientRow) {
       deletedAt: null,
     }).select('_id').lean();
 
-    const createdBy = clientRow.assignedAM || clientRow.projectManager || fallbackUser?._id;
+    const createdBy =
+      userIdFromRef(clientRow.assignedAM) || userIdFromRef(clientRow.projectManager) || fallbackUser?._id;
     if (!createdBy) return;
 
     const service = Array.isArray(clientRow.services) && clientRow.services.length ? clientRow.services[0] : 'Other';
@@ -177,7 +247,12 @@ exports.getClients = async (req, res) => {
 // @POST /api/clients
 exports.createClient = async (req, res) => {
   try {
-    const data = { ...req.body };
+    const raw = sanitizeClientPayload(req.body);
+    const hs = parseHealthScoreOverall(raw.healthScoreOverall);
+    if (hs?.error) return res.status(400).json({ success: false, message: hs.error });
+    delete raw.healthScoreOverall;
+
+    const data = pickAllowedClientFields(raw);
     if ('phone' in data) {
       const p = parsePhone(data.phone);
       if (!p.ok) return res.status(400).json({ success: false, message: p.message });
@@ -189,9 +264,6 @@ exports.createClient = async (req, res) => {
       data.assignedAM = req.user._id;
       delete data.contractValue;
     }
-    const hs = parseHealthScoreOverall(data.healthScoreOverall);
-    if (hs?.error) return res.status(400).json({ success: false, message: hs.error });
-    delete data.healthScoreOverall;
     if (hs?.value != null) {
       data.healthScore = {
         ...(data.healthScore || {}),
@@ -288,7 +360,7 @@ exports.updateClient = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Client not found' });
     }
 
-    const payload = { ...req.body };
+    const payload = sanitizeClientPayload(req.body);
     if ('phone' in payload) {
       const p = parsePhone(payload.phone);
       if (!p.ok) return res.status(400).json({ success: false, message: p.message });
@@ -308,7 +380,8 @@ exports.updateClient = async (req, res) => {
       if (hs.value < 5 && existing.status === 'active') payload.status = 'at_risk';
       if (hs.value >= 8 && existing.status === 'at_risk') payload.status = 'active';
     }
-    const client = await Client.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true })
+    const updateDoc = pickAllowedClientFields(payload);
+    const client = await Client.findByIdAndUpdate(req.params.id, updateDoc, { new: true, runValidators: true })
       .populate('assignedAM', 'name email avatar')
       .populate('projectManager', 'name email avatar')
       .populate('assignedDepartments', 'name slug color');

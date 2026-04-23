@@ -99,7 +99,7 @@ exports.restoreTask = async (req, res) => {
   }
 };
 
-// @DELETE /api/trash/user/:id  (permanent — super_admin only)
+// @DELETE /api/trash/user/:id  (permanent — requires trash.delete in module permissions)
 exports.permanentDeleteUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
